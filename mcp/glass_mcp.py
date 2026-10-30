@@ -22,7 +22,13 @@ from pathlib import Path
 DEFAULT_USB_IP = os.environ.get("GLASS_USB_IP", "172.16.42.1")
 DEFAULT_WIFI_IP = os.environ.get("GLASS_WIFI_IP", "")
 DEFAULT_PORT = int(os.environ.get("GLASS_AGENT_PORT", "8080"))
-SCREENSHOT_DIR = Path(os.environ.get("GLASS_SCREENSHOT_DIR", Path(__file__).resolve().parent.parent / "docs" / "screenshots"))
+_PRIVATE_SCREENSHOT_DIR = Path("/home/niclydon/projects/glass-os/muse-gadget-overlay/docs/screenshots")
+SCREENSHOT_DIR = Path(
+    os.environ.get(
+        "GLASS_SCREENSHOT_DIR",
+        _PRIVATE_SCREENSHOT_DIR if _PRIVATE_SCREENSHOT_DIR.is_dir() else (Path(__file__).resolve().parent.parent / "docs" / "screenshots"),
+    )
+)
 TOKEN_PATH = Path.home() / ".config" / "glass-mcp" / "token"
 
 

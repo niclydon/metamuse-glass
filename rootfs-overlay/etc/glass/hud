@@ -14,11 +14,36 @@
 #   echo nexus > /run/glass/choice && killall prismd fb-hello
 #   rm -f /run/glass/choice        && killall prismd fb-hello   # re-open boot chooser
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-mkdir -p /run/glass /run/glass/cap
+mkdir -p /run/glass /run/glass/cap /var/lib/musegadget
 log() { echo "$(date +%T 2>/dev/null || echo 00:00:00) hud: $*" >> /run/glass/hud.log; }
+
+# Handle `/etc/glass/hud switch vox|nexus|chooser` without spawning a second supervisor loop!
+# /etc/inittab runs `::respawn:/etc/glass/hud`, so killing the active UI binary makes init
+# immediately respawn /etc/glass/hud with the new /run/glass/choice.
+if [ "${1:-}" = "switch" ]; then
+    target="${2:-vox}"
+    echo "$target" > /run/glass/choice
+    if [ "$target" = "vox" ] || [ "$target" = "nexus" ]; then
+        echo "$target" > /var/lib/musegadget/default-os 2>/dev/null || true
+    fi
+    if [ "$target" = "vox" ]; then
+        echo 7 > /run/glass/card
+        echo 7 > /run/glass/active-card
+    fi
+    log "switch requested -> $target"
+    killall prismd fb-hello 2>/dev/null || true
+    exit 0
+fi
 
 CHOOSE_S=5
 [ -f /etc/prism/prismd.conf ] && . /etc/prism/prismd.conf
+
+# Always ensure LCoS panel and OMAP4 DSS clocks are awake before prismd/fb-hello touch DISPC MMIO
+p_dpi=/sys/devices/platform/omapdss/manager2/panel-notle-dpi
+if [ -d "$p_dpi" ]; then
+    [ "$(cat "$p_dpi/enabled" 2>/dev/null || echo 1)" = "0" ] && echo 1 > "$p_dpi/enabled" 2>/dev/null || true
+    echo 0 > /sys/devices/platform/omapfb/graphics/fb0/blank 2>/dev/null || true
+fi
 
 # Check if a persistent default OS is set on userdata (/var/lib/musegadget/default-os)
 if [ ! -s /run/glass/choice ] && [ -s /var/lib/musegadget/default-os ]; then
@@ -63,22 +88,17 @@ case "$(cat /run/glass/choice 2>/dev/null | tr -d ' \t\r\n')" in
             sleep 5
             exit 1
         fi
-        # The second system's host address is site-specific: set PRISM_HOST
-        # in the environment for the Wi-Fi path. The USB dock link
-        # (172.16.42.2) is probed automatically and needs no configuration.
-        TARGET_HOST="${PRISM_HOST:-}"
+        TARGET_HOST="${PRISM_HOST:-192.168.0.233}"
         TARGET_IFACE="wlan0"
         if [ "$(cat /sys/class/net/rndis0/carrier 2>/dev/null || echo 0)" = "1" ] &&
            ping -c 1 -W 1 172.16.42.2 >/dev/null 2>&1; then
             TARGET_HOST="172.16.42.2"
             TARGET_IFACE="rndis0"
         fi
-        if [ -z "$TARGET_HOST" ]; then
-            log "PRISM_HOST is not set and no USB dock link is up; cannot start prismd"
-            sleep 5
-            exit 1
-        fi
         log "starting NexusOS (prismd -> ${TARGET_HOST}:${PRISM_PORT:-7872} via ${TARGET_IFACE})"
+        for pid in $(ps -ef 2>/dev/null | awk '/tail -f \/run\/glass\/prismd\.log/ && !/awk/ {print $1}'); do
+            kill "$pid" 2>/dev/null || true
+        done
         : > /run/glass/prismd.log
         (
             tail -f /run/glass/prismd.log 2>/dev/null | while IFS= read -r line; do
@@ -99,6 +119,9 @@ case "$(cat /run/glass/choice 2>/dev/null | tr -d ' \t\r\n')" in
             --token-file /etc/prism/token --fb /dev/fb0 --input-dir /dev/input \
             --cap-dir /run/glass/cap --wlan "${TARGET_IFACE}" --presence-s 60 --ack 2>>/run/glass/prismd.log || true
         kill "$WATCH_PID" 2>/dev/null || true
+        for pid in $(ps -ef 2>/dev/null | awk '/tail -f \/run\/glass\/prismd\.log/ && !/awk/ {print $1}'); do
+            kill "$pid" 2>/dev/null || true
+        done
         exit 0
         ;;
     *)

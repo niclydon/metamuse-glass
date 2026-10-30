@@ -12,3 +12,8 @@ work/
 *pairing*.json
 *sdk_token*
 .env
+
+# Raw test captures and screen recordings belong only in the private glass-os repo
+docs/screenshots/live-capture-*
+docs/screenshots/prism-clip-*
+docs/screenshots/camera-clip-*

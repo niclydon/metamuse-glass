@@ -20,12 +20,15 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <math.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MINIMP3_IMPLEMENTATION
@@ -112,31 +115,41 @@ static unsigned hw_val(const struct k_hw_params *p, int param) {
 
 static int pcm_open_34(const char *dev_path, int is_capture,
                        unsigned *out_rate, unsigned *out_ch) {
-    int fd = open(dev_path, O_RDWR | O_CLOEXEC);
+    int fd = -1;
+    for (int retry = 0; retry < 30; retry++) {
+        fd = open(dev_path, O_RDWR | O_CLOEXEC);
+        if (fd >= 0 || errno != EBUSY)
+            break;
+        usleep(25000);
+    }
     if (fd < 0) {
         fprintf(stderr, "glass-wav: open %s: %s\n", dev_path, strerror(errno));
         return -1;
     }
     static const unsigned rates[] = {48000, 24000, 44100, 16000};
     static const unsigned chans[] = {2, 1};
+    static const unsigned period_mins[] = {2048, 1056};
+    static const unsigned period_cnts[] = {8, 4};
     struct k_hw_params p;
     int ok = 0;
-    for (unsigned ri = 0; ri < 4 && !ok; ri++) {
-        for (unsigned ci = 0; ci < 2 && !ok; ci++) {
-            unsigned r = rates[ri], c = chans[ci];
-            hw_any(&p);
-            hw_mask(&p, P_ACCESS, ACCESS_RW_INTERLEAVED);
-            hw_mask(&p, P_FORMAT, FORMAT_S16_LE);
-            hw_mask(&p, P_SUBFORMAT, SUBFORMAT_STD);
-            hw_min(&p, P_PERIOD_SIZE, 1056);
-            hw_int(&p, P_SAMPLE_BITS, 16);
-            hw_int(&p, P_FRAME_BITS, c * 16);
-            hw_int(&p, P_CHANNELS, c);
-            hw_int(&p, P_PERIODS, 4);
-            hw_int(&p, P_RATE, r);
-            ioctl(fd, K_HW_REFINE, &p);
-            if (ioctl(fd, K_HW_PARAMS, &p) == 0)
-                ok = 1;
+    for (unsigned pi = (is_capture ? 1 : 0); pi < 2 && !ok; pi++) {
+        for (unsigned ri = 0; ri < 4 && !ok; ri++) {
+            for (unsigned ci = 0; ci < 2 && !ok; ci++) {
+                unsigned r = rates[ri], c = chans[ci];
+                hw_any(&p);
+                hw_mask(&p, P_ACCESS, ACCESS_RW_INTERLEAVED);
+                hw_mask(&p, P_FORMAT, FORMAT_S16_LE);
+                hw_mask(&p, P_SUBFORMAT, SUBFORMAT_STD);
+                hw_min(&p, P_PERIOD_SIZE, period_mins[pi]);
+                hw_int(&p, P_SAMPLE_BITS, 16);
+                hw_int(&p, P_FRAME_BITS, c * 16);
+                hw_int(&p, P_CHANNELS, c);
+                hw_min(&p, P_PERIODS, period_cnts[pi]);
+                hw_int(&p, P_RATE, r);
+                ioctl(fd, K_HW_REFINE, &p);
+                if (ioctl(fd, K_HW_PARAMS, &p) == 0)
+                    ok = 1;
+            }
         }
     }
     if (!ok) {
@@ -154,7 +167,7 @@ static int pcm_open_34(const char *dev_path, int is_capture,
     s.period_step = 1;
     s.avail_min = period;
     s.xfer_align = 1;
-    s.start_threshold = is_capture ? 1 : period;
+    s.start_threshold = is_capture ? 1 : (period * 2 <= buffer ? period * 2 : period);
     s.stop_threshold = buffer * 2;
     s.boundary = buffer * 256;
     ioctl(fd, K_SW_PARAMS, &s);
@@ -563,19 +576,43 @@ static int cmd_stream_play(const char *dev_path) {
         fd = pcm_open_34("/dev/snd/pcmC0D0p", 0, &hw_rate, &hw_ch);
     if (fd < 0) return 1;
 
+#ifdef F_SETPIPE_SZ
+    fcntl(STDIN_FILENO, F_SETPIPE_SZ, 262144);
+#endif
+
     uint32_t in_rate = 24000;
     uint32_t step = (uint32_t)(((uint64_t)in_rate << 16) / hw_rate);
     uint32_t frac = 0;
     int32_t prev_s = 0;
-    int16_t in_buf[1024];
-    int16_t out_buf[4096 * 2];
+    int16_t in_buf[4096];
+    int16_t out_buf[8192 * 2];
     uint8_t *raw_in = (uint8_t *)in_buf;
     size_t carry = 0;
+    int speaking = 0;
+    int vol_pct = read_volume_pct();
+    unsigned chunk_counter = 0;
 
     while (!stop_flag) {
         if (access("/run/glass/stop-call", F_OK) == 0) {
             ioctl(fd, K_DROP);
             break;
+        }
+        struct pollfd pfd = {STDIN_FILENO, POLLIN, 0};
+        int pr = poll(&pfd, 1, speaking ? 420 : 1000);
+        if (pr < 0) {
+            if (errno == EINTR || errno == EAGAIN)
+                continue;
+            break;
+        }
+        if (pr == 0) {
+            if (speaking) {
+                speaking = 0;
+                unlink("/run/glass/nova-speaking");
+                write_rms_file(0);
+                ioctl(fd, K_DRAIN);
+                ioctl(fd, K_PREPARE);
+            }
+            continue;
         }
         ssize_t n = read(STDIN_FILENO, raw_in + carry, sizeof(in_buf) - carry);
         if (n <= 0) {
@@ -584,14 +621,31 @@ static int cmd_stream_play(const char *dev_path) {
             break;
         }
         size_t total_b = carry + (size_t)n;
+        if (!speaking) {
+            speaking = 1;
+            vol_pct = read_volume_pct();
+            int sfd = open("/run/glass/nova-speaking", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (sfd >= 0) close(sfd);
+            /* Pre-accumulate ~160ms (7680 bytes @ 24kHz) before starting ALSA DMA to absorb network/event-loop jitter */
+            while (total_b < 7680 && !stop_flag) {
+                struct pollfd pre_pfd = {STDIN_FILENO, POLLIN, 0};
+                if (poll(&pre_pfd, 1, 65) <= 0)
+                    break;
+                ssize_t m = read(STDIN_FILENO, raw_in + total_b, sizeof(in_buf) - total_b);
+                if (m <= 0)
+                    break;
+                total_b += (size_t)m;
+            }
+        } else if ((++chunk_counter & 15) == 0) {
+            vol_pct = read_volume_pct();
+        }
         size_t samples = total_b / 2;
         carry = total_b & 1;
 
-        int vol_pct = read_volume_pct();
         unsigned out_frames = 0;
         for (size_t i = 0; i < samples; i++) {
             int32_t cur_s = scale_vol(in_buf[i], vol_pct);
-            while (frac < 65536 && out_frames < 4096) {
+            while (frac < 65536 && out_frames < 8192) {
                 int16_t v = (int16_t)(prev_s + (((cur_s - prev_s) * (int32_t)frac) >> 16));
                 if (hw_ch == 2) {
                     out_buf[2 * out_frames] = v;
@@ -610,8 +664,10 @@ static int cmd_stream_play(const char *dev_path) {
 
         int16_t *p = out_buf;
         k_uframes rem = out_frames;
-        int rms = compute_pcm16_rms(out_buf, out_frames, hw_ch);
-        write_rms_file(rms);
+        if ((chunk_counter & 1) == 0 || out_frames >= 3840) {
+            int rms = compute_pcm16_rms(out_buf, out_frames, hw_ch);
+            write_rms_file(rms);
+        }
         while (rem > 0 && !stop_flag) {
             struct k_xferi x = {0, p, rem};
             if (ioctl(fd, K_WRITEI, &x) < 0) {
@@ -625,6 +681,7 @@ static int cmd_stream_play(const char *dev_path) {
         }
     }
 
+    unlink("/run/glass/nova-speaking");
     write_rms_file(0);
     ioctl(fd, K_DRAIN);
     close(fd);
@@ -638,10 +695,11 @@ static int cmd_stream_mic(double duration_s, const char *dev_path) {
         fd = pcm_open_34("/dev/snd/pcmC0D0c", 1, &hw_rate, &hw_ch);
     if (fd < 0) return 1;
 
+    int continuous = (duration_s <= 0.0);
     uint32_t out_rate = 24000;
     uint32_t lead_silence = 8400;   /* 0.35s leading silence so server_vad arms immediately */
     uint32_t trail_silence = 15600; /* 0.65s trailing silence so server_vad fires speech_stopped */
-    uint32_t max_speech_samples = (uint32_t)(out_rate * duration_s);
+    uint32_t max_speech_samples = continuous ? 0xFFFFFFFFu : (uint32_t)(out_rate * duration_s);
 
     int16_t zero_buf[960];
     memset(zero_buf, 0, sizeof zero_buf);
@@ -664,7 +722,7 @@ static int cmd_stream_mic(double duration_s, const char *dev_path) {
     int speech_chunks = 0;
     int quiet_after_speech_chunks = 0;
 
-    while (written < max_speech_samples && !stop_flag) {
+    while ((continuous || written < max_speech_samples) && !stop_flag) {
         if (access("/run/glass/stop-record", F_OK) == 0 ||
             access("/run/glass/stop-call", F_OK) == 0) {
             unlink("/run/glass/stop-record");
@@ -678,7 +736,7 @@ static int cmd_stream_mic(double duration_s, const char *dev_path) {
         }
         k_uframes got = (k_uframes)x.result;
         unsigned out_n = 0;
-        while ((acc_pos >> 16) < got && written + out_n < max_speech_samples) {
+        while ((acc_pos >> 16) < got && (continuous || written + out_n < max_speech_samples)) {
             unsigned idx = acc_pos >> 16;
             int16_t s = (hw_ch == 2)
                 ? (int16_t)(((int32_t)in_buf[2 * idx] + (int32_t)in_buf[2 * idx + 1]) / 2)
@@ -692,21 +750,28 @@ static int cmd_stream_mic(double duration_s, const char *dev_path) {
         if ((acc_pos >> 16) >= got)
             acc_pos -= (got << 16);
         if (out_n > 0) {
-            int rms = compute_pcm16_rms(out_buf, out_n, 1);
-            write_rms_file(rms * 2);
+            if (access("/run/glass/nova-speaking", F_OK) == 0) {
+                /* Mute mic while bone-conduction speaker is playing Nova's voice */
+                memset(out_buf, 0, out_n * sizeof(int16_t));
+            } else {
+                int rms = compute_pcm16_rms(out_buf, out_n, 1);
+                write_rms_file(rms * 2);
+                if (!continuous) {
+                    if (rms > 320) {
+                        speech_chunks++;
+                        quiet_after_speech_chunks = 0;
+                    } else if (speech_chunks >= 16) {
+                        quiet_after_speech_chunks++;
+                        if (quiet_after_speech_chunks >= 58) {
+                            break;
+                        }
+                    }
+                }
+            }
             if (fwrite(out_buf, sizeof(int16_t), out_n, stdout) != out_n)
                 break;
             fflush(stdout);
             written += out_n;
-            if (rms > 320) {
-                speech_chunks++;
-                quiet_after_speech_chunks = 0;
-            } else if (speech_chunks >= 16) {
-                quiet_after_speech_chunks++;
-                if (quiet_after_speech_chunks >= 58) { /* ~1.25s silence after speech -> auto-commit */
-                    break;
-                }
-            }
         }
     }
 
@@ -828,9 +893,117 @@ static int cmd_record(const char *out_path, double duration_s, const char *dev_p
     return 0;
 }
 
+static uint64_t now_mono_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)(ts.tv_nsec / 1000000L);
+}
+
+/* Zero-Wi-Fi-lag local framebuffer RLE recorder (`glass-wav record-screen <out.gfbr> [fps]`).
+ * Samples /dev/fb0 (640x360 BGRA32) at `fps` Hz, converts to RGB565, skips unchanged frames
+ * (writing an 8-byte duplicate header), and RLE-compresses changed frames in < 0.4ms CPU. */
+static int cmd_record_screen(const char *out_path, int fps) {
+    if (fps < 1) fps = 10;
+    if (fps > 24) fps = 24;
+    const int w = 640, h = 360, npix = w * h;
+    int fbfd = open("/dev/fb0", O_RDONLY);
+    if (fbfd < 0) {
+        perror("glass-wav: open /dev/fb0");
+        return 1;
+    }
+    const uint8_t *fbm = mmap(NULL, (size_t)npix * 4, PROT_READ, MAP_SHARED, fbfd, 0);
+    if (fbm == MAP_FAILED) {
+        perror("glass-wav: mmap /dev/fb0");
+        close(fbfd);
+        return 1;
+    }
+    FILE *f = fopen(out_path, "wb");
+    if (!f) {
+        perror("glass-wav: open record-screen output");
+        munmap((void *)fbm, (size_t)npix * 4);
+        close(fbfd);
+        return 1;
+    }
+    uint16_t cur565[640 * 360];
+    uint16_t prev565[640 * 360];
+    uint16_t *rle = malloc((size_t)npix * 2 * sizeof(uint16_t));
+    if (!rle) {
+        fclose(f);
+        munmap((void *)fbm, (size_t)npix * 4);
+        close(fbfd);
+        return 1;
+    }
+    /* Header: "GFBR" + uint16_t width + uint16_t height */
+    uint8_t hdr[8] = {'G', 'F', 'B', 'R', (uint8_t)(w & 0xFF), (uint8_t)(w >> 8), (uint8_t)(h & 0xFF), (uint8_t)(h >> 8)};
+    fwrite(hdr, 1, 8, f);
+    fflush(f);
+
+    int have_prev = 0;
+    uint64_t t0 = now_mono_ms();
+    int interval_ms = 1000 / fps;
+    uint32_t frames = 0;
+
+    while (!stop_flag && access("/run/glass/stop-screen-rec", F_OK) != 0) {
+        uint64_t loop_start = now_mono_ms();
+        uint32_t elapsed_ms = (uint32_t)(loop_start - t0);
+
+        const uint32_t *src32 = (const uint32_t *)fbm;
+        for (int i = 0; i < npix; i++) {
+            uint32_t bgra = src32[i];
+            uint8_t b = (uint8_t)(bgra & 0xFF);
+            uint8_t g = (uint8_t)((bgra >> 8) & 0xFF);
+            uint8_t r = (uint8_t)((bgra >> 16) & 0xFF);
+            cur565[i] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        }
+
+        if (have_prev && memcmp(cur565, prev565, sizeof cur565) == 0) {
+            uint32_t fhdr[2] = {elapsed_ms, 0};
+            fwrite(fhdr, sizeof(uint32_t), 2, f);
+        } else {
+            memcpy(prev565, cur565, sizeof cur565);
+            have_prev = 1;
+            int out_idx = 0;
+            int i = 0;
+            while (i < npix) {
+                uint16_t c = cur565[i];
+                uint16_t run = 1;
+                while (i + run < npix && cur565[i + run] == c && run < 65535) {
+                    run++;
+                }
+                rle[out_idx++] = run;
+                rle[out_idx++] = c;
+                i += run;
+            }
+            uint32_t rle_bytes = (uint32_t)(out_idx * sizeof(uint16_t));
+            uint32_t fhdr[2] = {elapsed_ms, rle_bytes};
+            fwrite(fhdr, sizeof(uint32_t), 2, f);
+            fwrite(rle, 1, rle_bytes, f);
+        }
+        frames++;
+        if ((frames & 7) == 0) fflush(f);
+
+        uint64_t took = now_mono_ms() - loop_start;
+        if ((int)took < interval_ms) {
+            usleep((useconds_t)(interval_ms - (int)took) * 1000);
+        }
+    }
+
+    fflush(f);
+    fclose(f);
+    free(rle);
+    munmap((void *)fbm, (size_t)npix * 4);
+    close(fbfd);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     signal(SIGINT, on_sig);
     signal(SIGTERM, on_sig);
+
+    if (argc >= 3 && strcmp(argv[1], "record-screen") == 0) {
+        int fps = argc >= 4 ? atoi(argv[3]) : 12;
+        return cmd_record_screen(argv[2], fps);
+    }
 
     if (argc >= 7 && strcmp(argv[1], "nv12-conv") == 0) {
         return cmd_nv12_conv(argv[2], atoi(argv[3]), atoi(argv[4]), argv[5], argv[6]);
