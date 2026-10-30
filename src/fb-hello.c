@@ -158,6 +158,49 @@ static void draw_nova_sprite_pack(const struct nova_sprite_pack *pk,
     }
 }
 
+static const char *tail_for_box(const char *text, int max_lines, int first_maxc, int next_maxc) {
+    if (!text || !*text || max_lines <= 0)
+        return text ? text : "";
+    while (*text == ' ')
+        text++;
+    if (max_lines == 1) {
+        int len = (int)strlen(text);
+        if (len <= first_maxc)
+            return text;
+        const char *p = text + len - first_maxc;
+        while (*p && *p != ' ')
+            p++;
+        while (*p == ' ')
+            p++;
+        return *p ? p : (text + len - first_maxc);
+    }
+    const char *line_starts[64];
+    int n_lines = 0;
+    const char *p = text;
+    while (*p && n_lines < 64) {
+        while (*p == ' ')
+            p++;
+        if (!*p)
+            break;
+        line_starts[n_lines] = p;
+        int maxc = (n_lines == 0) ? first_maxc : next_maxc;
+        int len = (int)strlen(p);
+        int take = len <= maxc ? len : maxc;
+        if (len > maxc) {
+            int sp = take;
+            while (sp > 4 && p[sp] != ' ')
+                sp--;
+            if (sp > 4)
+                take = sp;
+        }
+        p += take;
+        n_lines++;
+    }
+    if (n_lines <= max_lines)
+        return text;
+    return line_starts[n_lines - max_lines];
+}
+
 static void draw_nova_sprite(uint32_t *fb, unsigned stride, unsigned w, unsigned h,
                              unsigned dst_x, unsigned dst_y, unsigned dst_w, unsigned dst_h,
                              int state, int frame_idx) {
@@ -552,7 +595,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
 
         snprintf(buf, sizeof buf, "HCI0: %s (3MBPS)", bt_mac);
         draw_str(fbm, stride, w, h, 20, 86, buf, 2, 0xFFFFFFFFu, 0xFF000000u);
-        draw_str(fbm, stride, w, h, 20, 114, "NAME: MUSEGADGET<SUFFIX> (LE ADV)", 2, 0xFF64D2FFu, 0xFF000000u);
+        draw_str(fbm, stride, w, h, 20, 114, "NAME: MUSEGADGETE591A4 (LE ADV)", 2, 0xFF64D2FFu, 0xFF000000u);
         draw_str(fbm, stride, w, h, 20, 142, "UUID: 7FDD3D1C-38EA-46CF-8B46...", 2, 0xFFE0E0E0u, 0xFF000000u);
         draw_str(fbm, stride, w, h, 20, 170, "GATT: CMD 0XFD02 / NOTIFY 0XFD03", 2, 0xFFFFD60Au, 0xFF000000u);
         draw_str(fbm, stride, w, h, 20, 198, "SHIM: LIBGLASS_BLE_SHIM (MTU 23)", 2, 0xFF5E5CE6u, 0xFF000000u);
@@ -577,7 +620,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
         fill_rect(fbm, stride, w, h, 20, h - 54, w - 40, 2, 0xFF48484Au);
         draw_str(fbm, stride, w, h, 20, h - 42, "GLASS-OS // M4 AUDIO VERIFIED", 2, 0xFFAEAEB2u, 0xFF000000u);
     } else if (card_idx >= 4 && card_idx <= 10) {
-        char n_state[64], n_user[160], n_reply[320], n_rms[32], cam_act[16];
+        char n_state[64], n_user[512], n_reply[1024], n_rms[32], cam_act[16];
         read_sysfs("/run/glass/nova-state", n_state, sizeof n_state, "");
         if (!n_state[0])
             read_sysfs("/run/glass/nova-status", n_state, sizeof n_state, "NOISE SESSION READY");
@@ -601,7 +644,20 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
         const char *mode_label = "IDLE";
         uint32_t mode_col = 0xFF30D158u; /* green */
 
-        if (rms_val > 70 || strstr(n_state, "SPEAK") || strstr(n_state, "PLAY")) {
+        if (strstr(n_state, "LISTEN") || strstr(n_state, "LIVE CALL") || strstr(n_state, "RECORD") || strstr(n_state, "SPEECH")) {
+            av_state = 1; /* LISTENING */
+            av_frame = (int)(g_anim_tick / 2);
+            mode_label = strstr(n_state, "LIVE CALL") ? "LIVE CALL" : "LISTENING";
+            mode_col = 0xFF00E5FFu; /* cyan */
+        } else if (strstr(n_state, "THINK") || strstr(n_state, "CONNECT") || strstr(n_state, "WAIT")) {
+            av_state = 2; /* WORKING/THINKING */
+            int cnt = active_pk->hdr.counts[2] ? (int)active_pk->hdr.counts[2] : 1;
+            av_frame = (card_idx >= 7) ? ((int)(g_anim_tick / 2) % cnt)
+                                       : (cnt - 1 - ((int)(g_anim_tick / 2) % cnt));
+            mode_label = strstr(n_state, "CONNECT") ? "CONNECTING" : "THINKING";
+            mode_col = 0xFFBF5AF2u; /* purple */
+        } else if (strstr(n_state, "SPEAKING") || strstr(n_state, "PLAY") ||
+                   (access("/run/glass/nova-speaking", F_OK) == 0 && rms_val > 70)) {
             mode_label = "SPEAKING";
             mode_col = 0xFFFFD60Au; /* Nova gold */
             if (g_smooth_rms > 65 && active_pk->hdr.counts[3] > 0) {
@@ -618,18 +674,6 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
                 av_state = 3;
                 av_frame = (g_anim_tick / 3) & 1; /* subtle closed-smile breath between syllables */
             }
-        } else if (strstr(n_state, "LISTEN") || strstr(n_state, "RECORD") || strstr(n_state, "SPEECH")) {
-            av_state = 1; /* LISTENING */
-            av_frame = (int)(g_anim_tick / 2);
-            mode_label = "LISTENING";
-            mode_col = 0xFF00E5FFu; /* cyan */
-        } else if (strstr(n_state, "THINK") || strstr(n_state, "CONNECT") || strstr(n_state, "WAIT")) {
-            av_state = 2; /* WORKING/THINKING */
-            int cnt = active_pk->hdr.counts[2] ? (int)active_pk->hdr.counts[2] : 1;
-            av_frame = (card_idx >= 7) ? ((int)(g_anim_tick / 2) % cnt)
-                                       : (cnt - 1 - ((int)(g_anim_tick / 2) % cnt));
-            mode_label = "THINKING";
-            mode_col = 0xFFBF5AF2u; /* purple */
         } else {
             av_state = 0; /* IDLE */
             av_frame = (int)(g_anim_tick / 2);
@@ -665,7 +709,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             read_sysfs("/run/glass/sleep-timeout-sec", slp_s, sizeof slp_s, "15");
             int slp_v = atoi(slp_s);
 
-            char rows[6][32];
+            char rows[6][48];
             snprintf(rows[0], sizeof rows[0], "VOLUME    : %s%%", vol_s);
             snprintf(rows[1], sizeof rows[1], "BRIGHTNESS: %s / 255", bri_s);
             snprintf(rows[2], sizeof rows[2], "AUDIO OUT : %s",
@@ -716,7 +760,8 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             /* Bottom-right caption box (x=156..628, y=248..352) */
             fill_rect(fbm, stride, w, h, 156, 248, w - 168, 104, 0xFF0D0F18u);
             fill_rect(fbm, stride, w, h, 156, 248, w - 168, 3, mode_col);
-            const char *p = (n_reply[0] && strcmp(n_reply, "...") != 0) ? n_reply : n_user;
+            const char *raw_p = (av_state == 1 || !n_reply[0] || strcmp(n_reply, "...") == 0) ? n_user : n_reply;
+            const char *p = tail_for_box(raw_p, 4, 25, 25);
             for (int line = 0; line < 4 && *p; line++) {
                 while (*p == ' ') p++;
                 if (!*p) break;
@@ -737,7 +782,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             /* Full-Body Chibi Nova PiP standing in bottom-left corner (144x192) */
             draw_nova_fullbody(fbm, stride, w, h, 6, 164, 144, 192, av_state, av_frame);
         } else if (card_idx == 8) {
-            /* CARD 8: Full-Screen Centered Full-Body Chibi Nova (Glance Stand-Up Mode, 234x312) */
+            /* CARD 8: Full-Screen Centered Full-Body Chibi Nova (Glance Stand-Up Mode, 222x296) */
             /* Left & right floating vertical voice waveform wings */
             for (unsigned side = 0; side < 2; side++) {
                 unsigned sx = (side == 0) ? 20 : (w - 20 - 8 * 16);
@@ -747,38 +792,32 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
                     if (bar_rms < 0) bar_rms = 0;
                     unsigned bh = 8 + (unsigned)((bar_rms * 140) / 2800);
                     if (bh > 148) bh = 148;
-                    unsigned by = 84 + (148 - bh) / 2;
+                    unsigned by = 80 + (148 - bh) / 2;
                     uint32_t bcol = (bar_rms > 80) ? mode_col : 0xFF1C1C24u;
                     fill_rect(fbm, stride, w, h, sx + bi * 16, by, 11, bh, bcol);
                 }
             }
 
-            /* Full-Body Chibi Nova standing head-to-boots centered on the prism (234x312, y=2..314) */
-            draw_nova_fullbody(fbm, stride, w, h, (w - 234) / 2, 2, 234, 312, av_state, av_frame);
+            /* Full-Body Chibi Nova standing head-to-boots centered on the prism (222x296, y=2..298) */
+            draw_nova_fullbody(fbm, stride, w, h, (w - 222) / 2, 2, 222, 296, av_state, av_frame);
 
             /* Top-left & top-right minimal floating pills */
             draw_str(fbm, stride, w, h, 16, 16, "NOVA", 2, 0xFFFFD60Au, 0xFF000000u);
             snprintf(buf, sizeof buf, "[%s]", mode_label);
             draw_str(fbm, stride, w, h, w - 16 - (unsigned)strlen(buf) * 18, 16, buf, 2, mode_col, 0xFF000000u);
 
-            /* Floating bottom subtitle bar (y = 316..356) below Nova's boots */
-            fill_rect(fbm, stride, w, h, 16, 316, w - 32, 40, 0xFF0D0F18u);
-            fill_rect(fbm, stride, w, h, 16, 316, w - 32, 2, mode_col);
-            const char *sub = (n_reply[0] && strcmp(n_reply, "...") != 0) ? n_reply : n_user;
-            const char *p = sub;
-            while (*p == ' ') p++;
-            int maxc = 32;
-            int len = (int)strlen(p);
-            int take = len <= maxc ? len : maxc;
-            if (len > maxc) {
-                int sp = take;
-                while (sp > 12 && p[sp] != ' ') sp--;
-                if (sp > 12) take = sp;
-            }
-            char lbuf[40];
-            snprintf(lbuf, sizeof lbuf, "%.*s", take, p);
-            unsigned lx = (w - (unsigned)strlen(lbuf) * 18) / 2;
-            draw_str(fbm, stride, w, h, lx, 326, lbuf, 2, 0xFFFFFFFFu, 0xFF0D0F18u);
+            /* 2-line floating bottom conversation bar (y = 300..356) below Nova's boots */
+            fill_rect(fbm, stride, w, h, 12, 300, w - 24, 56, 0xFF0D0F18u);
+            fill_rect(fbm, stride, w, h, 12, 300, w - 24, 2, mode_col);
+            const char *u_tail = tail_for_box(n_user, 1, 27, 27);
+            const char *r_tail = tail_for_box(n_reply, 1, 26, 26);
+            char u_line[44], r_line[44];
+            snprintf(u_line, sizeof u_line, "YOU: %.27s", u_tail);
+            snprintf(r_line, sizeof r_line, "NOVA: %.26s", r_tail);
+            draw_str(fbm, stride, w, h, 20, 306, u_line, 2,
+                     av_state == 1 ? 0xFF00E5FFu : 0xFFFFD60Au, 0xFF0D0F18u);
+            draw_str(fbm, stride, w, h, 20, 330, r_line, 2,
+                     av_state == 3 ? 0xFFFFFFFFu : 0xFF64D2FFu, 0xFF0D0F18u);
         } else if (card_idx == 7) {
             /* CARD 7: Full-Body Chibi Nova (252x336 on left) + Floating Right Muse Gadget HUD */
             draw_nova_fullbody(fbm, stride, w, h, 20, 12, 252, 336, av_state, av_frame);
@@ -799,8 +838,8 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
                 fill_rect(fbm, stride, w, h, cx - 2, cy - 2, 148, 85, 0xFF00E5FFu);
                 draw_camera_rect(fbm, stride, w, h, cx, cy, 144, 81);
             }
-            const char *up = n_user;
             int u_lines = has_cam ? 3 : 2;
+            const char *up = tail_for_box(n_user, u_lines, has_cam ? 5 : 13, has_cam ? 9 : 18);
             for (int line = 0; line < u_lines && *up; line++) {
                 while (*up == ' ') up++;
                 if (!*up) break;
@@ -827,7 +866,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             int r_max_lines = has_cam ? 7 : 8;
             fill_rect(fbm, stride, w, h, rx, r_y, rw, r_h, 0xFF121120u);
             fill_rect(fbm, stride, w, h, rx, r_y, 4, r_h, mode_col);
-            const char *p = n_reply;
+            const char *p = tail_for_box(n_reply, r_max_lines, 12, 18);
             for (int line = 0; line < r_max_lines && *p; line++) {
                 while (*p == ' ') p++;
                 if (!*p) break;
@@ -888,29 +927,18 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
                 }
             }
 
-            /* Floating bottom subtitle bar (y = 288..354) */
-            fill_rect(fbm, stride, w, h, 16, 288, w - 32, 66, 0xFF0D0F18u);
-            fill_rect(fbm, stride, w, h, 16, 288, w - 32, 2, mode_col);
-            const char *sub = (n_reply[0] && strcmp(n_reply, "...") != 0) ? n_reply : n_user;
-            const char *p = sub;
-            for (int line = 0; line < 2 && *p; line++) {
-                while (*p == ' ') p++;
-                if (!*p) break;
-                int maxc = 34;
-                int len = (int)strlen(p);
-                int take = len <= maxc ? len : maxc;
-                if (len > maxc) {
-                    int sp = take;
-                    while (sp > 12 && p[sp] != ' ') sp--;
-                    if (sp > 12) take = sp;
-                }
-                char lbuf[44];
-                snprintf(lbuf, sizeof lbuf, "%.*s", take, p);
-                unsigned lx = (w - (unsigned)strlen(lbuf) * 16) / 2;
-                draw_str(fbm, stride, w, h, lx, 296 + (unsigned)line * 26, lbuf, 2,
-                         line == 0 ? 0xFFFFFFFFu : 0xFF64D2FFu, 0xFF0D0F18u);
-                p += take;
-            }
+            /* 2-line floating bottom conversation bar (y = 288..354) */
+            fill_rect(fbm, stride, w, h, 12, 288, w - 24, 66, 0xFF0D0F18u);
+            fill_rect(fbm, stride, w, h, 12, 288, w - 24, 2, mode_col);
+            const char *u_tail = tail_for_box(n_user, 1, 29, 29);
+            const char *r_tail = tail_for_box(n_reply, 1, 28, 28);
+            char u_line[44], r_line[44];
+            snprintf(u_line, sizeof u_line, "YOU: %.29s", u_tail);
+            snprintf(r_line, sizeof r_line, "NOVA: %.28s", r_tail);
+            draw_str(fbm, stride, w, h, 20, 296, u_line, 2,
+                     av_state == 1 ? 0xFF00E5FFu : 0xFFFFD60Au, 0xFF0D0F18u);
+            draw_str(fbm, stride, w, h, 20, 322, r_line, 2,
+                     av_state == 3 ? 0xFFFFFFFFu : 0xFF64D2FFu, 0xFF0D0F18u);
         } else if (card_idx == 5) {
             /* CARD 5: Full-Screen Borderless 312x312 Chibi Nova + Floating Right Muse Gadget HUD */
             draw_nova_sprite(fbm, stride, w, h, 4, 24, 312, 312, av_state, av_frame);
@@ -924,7 +952,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             /* Caller prompt card (y=46..102) */
             fill_rect(fbm, stride, w, h, rx, 46, rw, 56, 0xFF10131Eu);
             fill_rect(fbm, stride, w, h, rx, 46, 4, 56, 0xFF00E5FFu);
-            const char *up = n_user;
+            const char *up = tail_for_box(n_user, 2, 12, 17);
             for (int line = 0; line < 2 && *up; line++) {
                 while (*up == ' ') up++;
                 if (!*up) break;
@@ -948,7 +976,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             /* Nova spoken reply card (y=108..298) */
             fill_rect(fbm, stride, w, h, rx, 108, rw, 190, 0xFF121120u);
             fill_rect(fbm, stride, w, h, rx, 108, 4, 190, mode_col);
-            const char *p = n_reply;
+            const char *p = tail_for_box(n_reply, 8, 11, 17);
             for (int line = 0; line < 8 && *p; line++) {
                 while (*p == ' ') p++;
                 if (!*p) break;
@@ -1018,16 +1046,17 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
 
             fill_rect(fbm, stride, w, h, rx, 102, rw, 60, 0xFF121521u);
             fill_rect(fbm, stride, w, h, rx, 102, 4, 60, 0xFF00E5FFu);
-            snprintf(buf, sizeof buf, "YOU: %.20s", n_user);
+            const char *up4 = tail_for_box(n_user, 2, 20, 25);
+            snprintf(buf, sizeof buf, "YOU: %.20s", up4);
             draw_str(fbm, stride, w, h, rx + 10, 108, buf, 2, 0xFFFFD60Au, 0xFF121521u);
-            if (strlen(n_user) > 20) {
-                snprintf(buf, sizeof buf, "%.25s", n_user + 20);
+            if (strlen(up4) > 20) {
+                snprintf(buf, sizeof buf, "%.25s", up4 + 20);
                 draw_str(fbm, stride, w, h, rx + 10, 134, buf, 2, 0xFFFFD60Au, 0xFF121521u);
             }
 
             fill_rect(fbm, stride, w, h, rx, 170, rw, 122, 0xFF141324u);
             fill_rect(fbm, stride, w, h, rx, 170, 4, 122, mode_col);
-            const char *p = n_reply;
+            const char *p = tail_for_box(n_reply, 5, 19, 25);
             for (int line = 0; line < 5 && *p; line++) {
                 while (*p == ' ') p++;
                 if (!*p) break;
@@ -1124,7 +1153,7 @@ static void set_active_card(int next_card, const char *trig) {
     g_toast_ticks = 22;
 }
 
-static void activate_settings_row(int *keep_run_out) {
+static void activate_settings_row(volatile sig_atomic_t *keep_run_out) {
     char buf[32], out[32];
     if (g_settings_row == 0) {
         read_sysfs("/run/glass/volume", buf, sizeof buf, "");
@@ -1533,15 +1562,17 @@ int main(int argc, char **argv) {
                                         /* Single tap on temple -> Start / Send / Stop Nova Voice Turn! */
                                         char cur_st[64];
                                         read_sysfs("/run/glass/nova-state", cur_st, sizeof cur_st, "");
-                                        if (strstr(cur_st, "LISTEN"))
+                                        if (strstr(cur_st, "LISTENING (SPEAKING)"))
                                             snprintf(g_toast_msg, sizeof g_toast_msg, "TAP: SENDING TO NOVA");
-                                        else if (strstr(cur_st, "SPEAK"))
-                                            snprintf(g_toast_msg, sizeof g_toast_msg, "TAP: STOP PLAYBACK");
+                                        else if (strstr(cur_st, "THINK") || strstr(cur_st, "CONNECT"))
+                                            snprintf(g_toast_msg, sizeof g_toast_msg, "NOVA THINKING — WAIT...");
+                                        else if (strstr(cur_st, "LIVE CALL") || strstr(cur_st, "SPEAKING"))
+                                            snprintf(g_toast_msg, sizeof g_toast_msg, "TAP: END VOICE CALL");
                                         else
-                                            snprintf(g_toast_msg, sizeof g_toast_msg, "TAP: SPEAK TO NOVA");
+                                            snprintf(g_toast_msg, sizeof g_toast_msg, "TAP: START LIVE CALL");
                                         g_toast_ticks = 22;
                                         if (access("/usr/sbin/glass-muse-voice", X_OK) == 0) {
-                                            int rc = system("/usr/sbin/glass-muse-voice --tap >/run/glass/voice-tap.log 2>&1 &");
+                                            int rc = system("/usr/sbin/glass-muse-voice --tap >>/run/glass/voice-tap.log 2>&1 &");
                                             (void)rc;
                                         }
                                     }

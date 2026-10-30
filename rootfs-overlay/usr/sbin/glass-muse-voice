@@ -17,11 +17,18 @@ if [ "${1:-}" = "--tap" ]; then
     if [ -f /run/glass/voice-turn.lock ]; then
         old_pid="$(cat /run/glass/voice-turn.lock 2>/dev/null || true)"
         if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            if grep -q "LISTENING (SPEAKING)" /run/glass/nova-state 2>/dev/null; then
-                # User tapped right after finishing a sentence -> force trailing silence so server_vad commits immediately
-                touch /run/glass/force-silence
-                exit 0
-            fi
+            cur_state="$(cat /run/glass/nova-state 2>/dev/null || true)"
+            case "$cur_state" in
+                *"LISTENING (SPEAKING)"*)
+                    # User tapped right after finishing a sentence -> force trailing silence so server_vad commits immediately
+                    touch /run/glass/force-silence
+                    exit 0
+                    ;;
+                *"CONNECTING"*|*"THINKING"*)
+                    # Never abort an in-flight connection or pending Nova response on an accidental/late tap
+                    exit 0
+                    ;;
+            esac
             touch /run/glass/stop-call /run/glass/stop-screen-rec /run/glass/stop-record
             for _ in 1 2 3 4 5 6; do
                 kill -0 "$old_pid" 2>/dev/null || break
@@ -59,7 +66,7 @@ fi
 
 /usr/sbin/glass-audio-route >/dev/null 2>&1 || true
 
-RECORD_SECS="${RECORD_SECS:-15}"
+RECORD_SECS="${RECORD_SECS:-35}"
 WORK_DIR="${WORK_DIR:-/tmp/muse-voice}"
 IN_WAV="$WORK_DIR/question.wav"
 OUT_WAV="$WORK_DIR/reply.wav"
@@ -99,7 +106,10 @@ from musegadget.service import DEFAULT_NOISE_HOST
 from musegadget.voice_call import FRAME_BYTES, SAMPLE_RATE, VoiceCall
 import musegadget.voice_call as vc
 
-idle_secs = float(os.environ.get("RECORD_SECS", "15"))
+# Allow up to 120s (5.76 MB) of buffered TTS audio so fast-streaming long replies never raise "voice playback buffer full"
+vc.MAX_PLAYBACK_BYTES = SAMPLE_RATE * 2 * 120
+
+idle_secs = float(os.environ.get("RECORD_SECS", "35"))
 work_dir = os.environ.get("WORK_DIR", "/tmp/muse-voice")
 in_wav_path = os.environ.get("IN_WAV", "/tmp/muse-voice/question.wav")
 out_wav_path = os.environ.get("OUT_WAV", "/tmp/muse-voice/reply.wav")
@@ -159,6 +169,7 @@ class GlassRealtimeAudio:
         self.play_write_cursor_bytes = 0
         self._timeline_lock = threading.Lock()
         self.t0 = time.monotonic()
+        self.call_ready = False
         self.speaking_started = False
         self.awaiting_greeting = proactive_greeting
         self.greeting_deadline = 0.0
@@ -246,7 +257,8 @@ class GlassRealtimeAudio:
                 chunk = chunk[:-1]
             if not chunk:
                 continue
-            self._append_timeline_mic(chunk)
+            if self.call_ready and not self.awaiting_greeting and not self.speaking_started and not os.path.exists("/run/glass/nova-speaking"):
+                self._append_timeline_mic(chunk)
             try:
                 self._capture.put_nowait(chunk)
             except queue.Full:
@@ -317,6 +329,9 @@ class GlassRealtimeAudio:
         if not pcm or self.closed or os.path.exists("/run/glass/stop-call"):
             return
         if not self.speaking_started:
+            if vc.pcm_rms(pcm) < 300:
+                # Ignore silent keepalive frames between turns so HUD never flips back to SPEAKING
+                return
             self.speaking_started = True
             write_file("/run/glass/nova-state", "SPEAKING")
             write_file("/run/glass/voice-state", "SPEAKING")
@@ -395,6 +410,7 @@ class GlassRealtimeAudio:
 
 
 async def main() -> int:
+    global custom_thread_id
     log_msg(f"=== glass-muse-voice starting (proactive_greeting={proactive_greeting}) ===")
     audio = GlassRealtimeAudio()
     audio.start_screen_recorder()
@@ -486,10 +502,11 @@ async def main() -> int:
             kind = ev.get("type", "")
             if kind == "hatch.voice.session":
                 real_tid = ev.get("thread_id") or ""
+                audio.call_ready = True
                 log_msg(f"voice session established: call_id={ev.get('call_id')} thread_id={real_tid}")
                 if proactive_greeting and not audio.speaking_started:
                     audio.awaiting_greeting = True
-                    audio.greeting_deadline = time.monotonic() + 7.5
+                    audio.greeting_deadline = time.monotonic() + 4.5
                     write_file("/run/glass/nova-state", "THINKING...")
                     write_file("/run/glass/nova-user", "[CALL CONNECTED — NOVA GREETING]")
                 if vm_id and real_tid:
@@ -545,6 +562,12 @@ async def main() -> int:
                 if audio.turn_reply_pcm or reply_live:
                     turn_response_done = True
                     turn_response_done_ts = time.monotonic()
+                elif audio.awaiting_greeting and not audio.speaking_started:
+                    audio.awaiting_greeting = False
+                    audio._clear_capture()
+                    write_file("/run/glass/nova-state", "LIVE CALL (SPEAK NOW)")
+                    write_file("/run/glass/nova-user", "[SPEAK NOW — LIVE CALL]")
+                    log_msg("proactive greeting skipped by server -> mic open immediately")
             yield ev
 
     vc.read_ndjson = live_read_ndjson
@@ -568,7 +591,7 @@ async def main() -> int:
                 c = call_ref[0]
                 now = time.monotonic()
                 still_playing = (
-                    bool(c._playback)
+                    (c._audible_frames > 0)
                     or (now < c._playing_until)
                     or os.path.exists("/run/glass/nova-speaking")
                     or (now - turn_response_done_ts < 0.35)
@@ -577,6 +600,7 @@ async def main() -> int:
                     turn_response_done = False
                     audio.speaking_started = False
                     audio.awaiting_greeting = False
+                    c._received_audio = False
                     audio._clear_capture()
                     save_turn_artifacts()
                     if not force_record:
@@ -636,7 +660,7 @@ async def main() -> int:
             thread_id=custom_thread_id,
             half_duplex=True,
             idle_timeout=idle_secs,
-            overall_timeout=180,
+            overall_timeout=360,
         )
         play_cursor = 0.0
         orig_flush = call._flush
@@ -664,14 +688,19 @@ async def main() -> int:
                     pcm, audible = call._playback.popleft()
                     call._playback_bytes -= len(pcm)
                     call._audible_frames -= int(audible)
+                    if not any(pcm):
+                        if not audio.speaking_started or (turn_response_done and call._audible_frames == 0):
+                            # Discard all-zero keepalive frames before speech starts or after speech completes
+                            continue
                     batch.extend(pcm)
                     duration = len(pcm) / (SAMPLE_RATE * 2)
                     if play_cursor < now:
                         play_cursor = now
                     play_cursor += duration
+                    if any(pcm):
+                        call._playing_until = play_cursor + SETTLE_SECONDS
                     if audible:
                         any_audible = True
-                        call._playing_until = play_cursor + SETTLE_SECONDS
                         call._activity = now
                 if batch:
                     call._output.write(bytes(batch))

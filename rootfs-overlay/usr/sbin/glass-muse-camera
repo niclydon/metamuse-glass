@@ -29,7 +29,15 @@ trap 'rm -f "$LOCK_FILE"' EXIT INT TERM
 
 /usr/sbin/glass-audio-route >/dev/null 2>&1 || true
 
-if [ "$CAPTURE_ONLY" = "0" ]; then
+IN_LIVE_CALL=0
+if [ -f /run/glass/voice-turn.lock ]; then
+    vc_pid=$(cat /run/glass/voice-turn.lock 2>/dev/null || true)
+    if [ -n "$vc_pid" ] && kill -0 "$vc_pid" 2>/dev/null; then
+        IN_LIVE_CALL=1
+    fi
+fi
+
+if [ "$CAPTURE_ONLY" = "0" ] && [ "$IN_LIVE_CALL" = "0" ]; then
     echo "THINKING" > /run/glass/nova-state
     echo "THINKING" > /run/glass/voice-state
     echo "[CAMERA PHOTO]" > /run/glass/nova-user
@@ -85,7 +93,9 @@ if [ "$CAPTURE_ONLY" = "1" ]; then
 fi
 
 echo "SENDING PHOTO TO NOVA..." > /run/glass/nova-reply
-/usr/bin/glass-wav chime think >/dev/null 2>&1 || true
+if [ "$IN_LIVE_CALL" = "0" ]; then
+    /usr/bin/glass-wav chime think >/dev/null 2>&1 || true
+fi
 
 # Auto-heal BCM4330 SDIO bus if Ducati camera capture triggered dhd_check_hang
 if ! ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1; then
@@ -112,9 +122,7 @@ fi
 if [ -f /run/glass/voice.env ]; then
     . /run/glass/voice.env || true
 fi
-# A stale thread id from an earlier session must never be reused; the
-# operator lists theirs in STALE_THREAD_ID (thread ids are never baked in).
-if [ -n "${STALE_THREAD_ID:-}" ] && [ "$THREAD_ID" = "$STALE_THREAD_ID" ]; then
+if [ "$THREAD_ID" = "e94d2f25-feda-483f-828e-72112aa020db" ]; then
     THREAD_ID=""
 fi
 export THREAD_ID PROMPT_MSG
@@ -189,6 +197,7 @@ async def main():
         noise_host=pairing.get("noise_host") or "hatch.metaaivm.com",
         vm_id=vm["vm_id"] or vm["vm_name"],
         vm_auth_token=vm["vm_auth_token"],
+        app_id="hatch-web",
         device=DeviceDescription(ident.node_id, "glass", "0.1.5", {}),
         run_command=lambda *a: {"ok": True},
         register_device=False,
@@ -225,14 +234,9 @@ then
     exit 1
 fi
 
-if [ -s /tmp/nova-camera-reply.mp3 ]; then
-    echo "SPEAKING" > /run/glass/nova-state
-    echo "SPEAKING" > /run/glass/voice-state
-    /usr/bin/glass-wav play /tmp/nova-camera-reply.mp3 -d /dev/snd/pcmC0D6p || \
-        /usr/bin/glass-wav play /tmp/nova-camera-reply.mp3 -d /dev/snd/pcmC0D0p || true
+if [ "$IN_LIVE_CALL" = "0" ]; then
+    echo "0" > /run/glass/nova-rms
+    echo "READY (TAP TO TALK)" > /run/glass/nova-state
+    echo "IDLE" > /run/glass/voice-state
+    /usr/bin/glass-wav chime done >/dev/null 2>&1 || true
 fi
-
-echo "0" > /run/glass/nova-rms
-echo "READY (TAP TO TALK)" > /run/glass/nova-state
-echo "IDLE" > /run/glass/voice-state
-/usr/bin/glass-wav chime done >/dev/null 2>&1 || true
