@@ -33,24 +33,37 @@ amixer_set "name='MUX_VX1'" "DMic0R"
 amixer_set "name='Voice Capture Mixer Capture'" 1
 amixer_set "name='AUDUL Voice UL Volume'" 120
 
-# 2. Route both internal bone-conduction transducer (Earphone) and HS DAC (micro-USB earbud)
-MODE="${1:-auto}"
-HEADSET_IN="$(cat /sys/devices/platform/usb_mux.0/headset 2>/dev/null || echo 0)"
+# 2. Route internal bone-conduction transducer (Earphone) and HS DAC (micro-USB earbud).
+#    IMPORTANT: Never switch usb_mux.0/mux_mode to 'audio' unless 'earbud' is explicitly
+#    selected, because mux_mode=audio disconnects the USB D+/D- lines (killing USB RNDIS)!
+MODE="${1:-}"
+if [ -z "$MODE" ] && [ -f /run/glass/audio-route ]; then
+    MODE="$(cat /run/glass/audio-route 2>/dev/null || true)"
+fi
+if [ -z "$MODE" ] && [ -f /var/lib/musegadget/audio-route ]; then
+    MODE="$(cat /var/lib/musegadget/audio-route 2>/dev/null || true)"
+fi
+MODE="${MODE:-bone}"
 
+mkdir -p /run/glass /var/lib/musegadget
 amixer_set "name='Earphone Playback Switch'" 1
 amixer_set "name='Earphone Playback Volume'" 15
 amixer_set "name='Headset Left Playback'" "HS DAC"
 amixer_set "name='Headset Right Playback'" "HS DAC"
 amixer_set "name='Headset Playback Volume'" 14
 
-if [ "$MODE" = "earbud" ] || [ "$HEADSET_IN" = "1" ]; then
+if [ "$MODE" = "earbud" ]; then
+    echo "earbud" > /run/glass/audio-route
+    echo "earbud" > /var/lib/musegadget/audio-route 2>/dev/null || true
     if [ -w /sys/devices/platform/usb_mux.0/mux_mode ]; then
         printf 'audio' > /sys/devices/platform/usb_mux.0/mux_mode 2>/dev/null || true
     fi
-    if [ -w /sys/devices/platform/usb_mux.0/id_monitor ]; then
-        printf '1' > /sys/devices/platform/usb_mux.0/id_monitor 2>/dev/null || true
-    fi
-    echo "[glass-audio] Configured TWL6040 Earphone (bone-conduction) + micro-USB Earbud (usb_mux=audio) + DMic0."
+    echo "[glass-audio] Configured TWL6040 Earphone + micro-USB Earbud (usb_mux=audio) + DMic0."
 else
-    echo "[glass-audio] Configured TWL6040 Earphone (bone-conduction) + HS DAC + DMic0 (usb_mux=usb)."
+    echo "bone" > /run/glass/audio-route
+    echo "bone" > /var/lib/musegadget/audio-route 2>/dev/null || true
+    if [ -w /sys/devices/platform/usb_mux.0/mux_mode ]; then
+        printf 'usb' > /sys/devices/platform/usb_mux.0/mux_mode 2>/dev/null || true
+    fi
+    echo "[glass-audio] Configured TWL6040 Earphone (bone-conduction) + DMic0 (usb_mux=usb)."
 fi

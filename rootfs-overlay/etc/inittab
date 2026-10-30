@@ -4,9 +4,9 @@
 ::respawn:/etc/glass/console uart
 # USB gadget serial shell on ttyGS0 (if composite ACM is enabled)
 ::respawn:/etc/glass/console usb
-# Continuous framebuffer test pattern & live hardware telemetry HUD on /dev/fb0
-::respawn:/usr/bin/fb-hello --no-panel-reset
-# SSH server on USB RNDIS (172.16.42.1) and Wi-Fi (wlan0) — allow blank root password (-B) & keys
-::respawn:/usr/sbin/dropbear -F -E -R -B -p 22 -K 5
+# Stage-2 Dual-Boot Chooser + Display HUD (Vox / GlassOS or NexusOS / Prism)
+::respawn:/etc/glass/hud
+# SSH server (keys-only: -s -g via /etc/glass/sshd; no password or blank-password login)
+::respawn:/etc/glass/sshd
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/bin/sync

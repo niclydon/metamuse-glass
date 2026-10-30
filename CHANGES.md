@@ -1,5 +1,12 @@
 # metamuse-glass changes
 
+## 1.1.0 — 2026-10-30 — Launch polish: sync to firmware 0.2.3
+
+- Code synced to the shipped firmware 0.2.3 state: camera-to-chat as shipped, the `glass-agentd` control plane, the 19-tool `glass-mcp` server (`mcp/`), `glass-camera-record`, the stage-2 dual-boot chooser (`etc/glass/hud`), keys-only SSH (`etc/glass/sshd`), realtime streaming voice, the on-device settings card, and the thermal and untethered-boot work. New narrative chapters under docs/narrative/ carry the session record, and docs/RESULTS.md is extended through the 0.2.x sessions.
+- Scrub pass on everything synced: no LAN addresses, device identifiers, or pairing material are baked in anywhere; site-specific values (the unit's Wi-Fi address, its Bluetooth address, the second system's host, the agent token) are supplied through environment variables — see docs/BUILDING.md. This pass also removes a Bluetooth-address default that 1.0.0 had shipped in `glass-bt-up`.
+- Docs: the README feature set is brought current (realtime voice, settings card, the MCP tool list, dual-boot, untethered boot, thermal numbers) with the article cover at docs/images/cover.png; MILESTONES gains the 0.2.x record, and its broken milestone-tour video link is replaced with the published Mux montage of the same captures; NARRATIVE's 2014 provenance is corrected (the unit was collected in person in San Francisco on February 28, 2014; the April 2014 shipment was a $225 prescription frame).
+- Gallery: card-10 and card-11 (camera), the live camera-chat capture, and the article's Bluetooth and pickup-day cards are added to docs/screenshots/. The settings-card capture is not included: its telemetry corner shows the unit's Wi-Fi address.
+
 ## 1.0.1 — 2026-10-30 — Naming cleanup
 
 - The overlay codename used during the first hours of this repo ("Vox") is retired; the firmware is referred to descriptively, and Prism is the hardware's device name, not a platform brand. Early HUD captures in docs/screenshots/ still show the VOX label the first builds rendered on the prism; they are kept as the historical record.

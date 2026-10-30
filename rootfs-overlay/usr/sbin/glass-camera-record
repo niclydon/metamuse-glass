@@ -1,0 +1,66 @@
+#!/bin/sh
+# glass-camera-record: Record a multi-second video clip (default 10s) on Google Glass.
+# Uses OMAP4 Ducati M3 hardware H.264 encoder (`/usr/bin/glass-camera`) when `/dev/rpmsg-omx1`
+# is active, or captures a multi-frame BGRA sequence fallback, with HUD banner + chimes.
+
+set -eu
+
+DURATION_S="${1:-10}"
+FPS="${2:-15}"
+KBPS="${3:-1500}"
+
+mkdir -p /run/glass /var/lib/musegadget/recordings /var/lib/musegadget/photos
+TS=$(date +%s 2>/dev/null || echo 0)
+OUT_BASE="/var/lib/musegadget/recordings/clip-${TS}"
+
+/usr/sbin/glass-audio-route >/dev/null 2>&1 || true
+prev_state=$(cat /run/glass/nova-state 2>/dev/null || echo "READY")
+prev_reply=$(cat /run/glass/nova-reply 2>/dev/null || echo "")
+
+echo "RECORDING" > /run/glass/nova-state
+echo "[CAMERA VIDEO ${DURATION_S}s]" > /run/glass/nova-user
+echo "RECORDING ${DURATION_S}s CLIP AT ${FPS} FPS..." > /run/glass/nova-reply
+/usr/bin/glass-wav chime start >/dev/null 2>&1 || true
+
+export LD_LIBRARY_PATH=/usr/lib:/lib:/mnt/system/vendor/lib:/mnt/system/lib
+FRAMES=$((DURATION_S * FPS))
+
+if [ -c /dev/rpmsg-omx1 ] && [ -x /usr/bin/glass-camera ]; then
+    /usr/bin/glass-camera -w 640 -h 360 -r "$FPS" -k "$KBPS" -n "$FRAMES" > "${OUT_BASE}.h264" 2>/run/glass/glass-camera-rec.err || true
+    /usr/bin/glass-camera -y -w 640 -h 360 -n 4 > /tmp/snap.nv12 2>/dev/null || true
+    if [ "$(wc -c < /tmp/snap.nv12 2>/dev/null || echo 0)" -ge 345600 ]; then
+        /usr/bin/glass-wav nv12-conv /tmp/snap.nv12 640 360 /run/glass/camera-frame.bgra /tmp/snap.scanlines >/dev/null 2>&1 || true
+        echo "1" > /run/glass/camera-active
+    fi
+    MODE="ducati-h264"
+    OUT_FILE="${OUT_BASE}.h264"
+else
+    # Fallback multi-frame capture at 3 fps into fast gzip-compressed BGRA stream (~20 KB/frame)
+    REC_FPS=3
+    REC_FRAMES=$((DURATION_S * REC_FPS))
+    rm -f "${OUT_BASE}.bgra.gz"
+    (
+        i=0
+        while [ "$i" -lt "$REC_FRAMES" ]; do
+            echo "RECORDING CLIP ($((i + 1))/${REC_FRAMES})..." > /run/glass/nova-reply
+            head -c 921600 /dev/fb0
+            i=$((i + 1))
+            usleep 300000 2>/dev/null || sleep 1
+        done
+    ) | gzip -1 > "${OUT_BASE}.bgra.gz"
+    head -c 921600 /dev/fb0 > /run/glass/camera-frame.bgra
+    echo "1" > /run/glass/camera-active
+    MODE="prism-bgra-gz"
+    FPS="$REC_FPS"
+    OUT_FILE="${OUT_BASE}.bgra.gz"
+fi
+
+/usr/bin/glass-wav chime think >/dev/null 2>&1 || true
+echo "$prev_state" > /run/glass/nova-state
+if [ -n "$prev_reply" ]; then
+    echo "$prev_reply" > /run/glass/nova-reply
+else
+    echo "SAVED ${DURATION_S}s CLIP (${MODE})" > /run/glass/nova-reply
+fi
+
+echo "${MODE}|${FPS}|${OUT_FILE}"

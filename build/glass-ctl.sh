@@ -12,7 +12,20 @@ set -euo pipefail
 OVERLAY_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OUT_DIR="$OVERLAY_DIR/out"
 BOOT_M0_IMG="$OUT_DIR/boot-m0.img"
-GLASS_IP="${GLASS_IP:-172.16.42.1}"
+GLASS_USB_IP="172.16.42.1"
+# The unit's Wi-Fi address is site-specific and is never baked in:
+# set GLASS_WIFI_IP (or GLASS_IP directly) in the environment.
+GLASS_WIFI_IP="${GLASS_WIFI_IP:-}"
+if [ -n "${GLASS_IP:-}" ]; then
+    GLASS_IP="$GLASS_IP"
+elif ping -c 1 -W 1 "$GLASS_USB_IP" >/dev/null 2>&1; then
+    GLASS_IP="$GLASS_USB_IP"
+elif [ -n "$GLASS_WIFI_IP" ]; then
+    GLASS_IP="$GLASS_WIFI_IP"
+else
+    echo "glass-ctl: unit not reachable on USB and GLASS_WIFI_IP is unset; set GLASS_WIFI_IP or GLASS_IP" >&2
+    GLASS_IP="$GLASS_USB_IP"
+fi
 
 assert_partition_allowed() {
     local part="$1"

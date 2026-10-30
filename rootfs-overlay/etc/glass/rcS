@@ -1,14 +1,15 @@
 #!/bin/sh
-# rcS: system initialization for Glass OS (Muse Gadget Overlay).
-#   1. Brings up loopback and USB RNDIS network gadget (172.16.42.1/24 + DHCP).
-#   2. Initializes the Himax HX7309 640x360 LCoS prism (0 -> 1 reset sequence
-#      on panel-notle-dpi/enabled so the stock 3.4.94 driver turns the LED on).
-#   3. Runs fb-hello --once to draw the initial test pattern and record
-#      framebuffer / DISPC diagnostics to ttyO2 and /run/glass/rcS.log.
-#   4. If Wi-Fi credentials are present in /etc/wpa_supplicant/wpa_supplicant.conf,
-#      brings up wlan0 (BCM4330 via bcmdhd + nl80211).
+# rcS: Full standalone system initialization for Glass OS (Vox + NexusOS Prism).
+# Runs on cold boot whether staying in initramfs or after switch_root to /dev/mmcblk0p10 (userdata).
+trap '' HUP
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-mkdir -p /run/glass /var/lib/misc /etc/dropbear /var/log
+ln -sf /bin/busybox /bin/sh 2>/dev/null || true
+chmod 0666 /dev/null /dev/zero /dev/random /dev/urandom 2>/dev/null || true
+mkdir -p /dev/pts /dev/shm /run /tmp /run/glass /run/glass/cap /var/lib/misc /etc/dropbear /var/log /lib/firmware
+[ -L /var/run ] || { rm -rf /var/run 2>/dev/null || true; ln -sf /run /var/run; }
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
 
 log() {
     msg="glass-os-rcS: $*"
@@ -17,26 +18,89 @@ log() {
     echo "$(date +%T 2>/dev/null || echo 00:00:00) $msg" >> /run/glass/rcS.log
 }
 
+# 0. Mount stock /system read-only at /mnt/system and run firmware loader for
+#    ducati-m3-core0.xem3 (5MP camera OMX) and tesla-dsp.xe64T (OMAP4 ABE audio)
+for u in /sys/class/block/*/uevent; do
+    grep -qx 'PARTNAME=system' "$u" 2>/dev/null || continue
+    sys_dev="/dev/${u%/uevent}"
+    sys_dev="/dev/${sys_dev##*/}"
+    mkdir -p /mnt/system /system
+    if mount -t ext4 -o ro "$sys_dev" /mnt/system 2>/dev/null || grep -q '/mnt/system' /proc/mounts 2>/dev/null; then
+        [ -d /mnt/system/bin ] && [ ! -e /system/bin ] && ln -sf /mnt/system/bin /system/bin
+        [ -d /mnt/system/lib ] && [ ! -e /system/lib ] && ln -sf /mnt/system/lib /system/lib
+        [ -d /mnt/system/etc ] && [ ! -e /system/etc ] && ln -sf /mnt/system/etc /system/etc
+        [ -d /mnt/system/vendor ] && [ ! -e /system/vendor ] && ln -sf /mnt/system/vendor /system/vendor
+        [ -x /mnt/system/bin/wpa_supplicant ] && [ ! -e /sbin/wpa_supplicant ] && ln -sf /mnt/system/bin/wpa_supplicant /sbin/wpa_supplicant
+        for fw in ducati-m3-core0.xem3 ducati-m3-core0-2gb.xem3 tesla-dsp.xe64T; do
+            [ -f "/mnt/system/vendor/firmware/$fw" ] && ln -sf "/mnt/system/vendor/firmware/$fw" "/lib/firmware/$fw"
+        done
+    fi
+    break
+done
+
+(
+    i=0
+    while [ $i -lt 60 ]; do
+        for d in /sys/class/firmware/*/; do
+            [ -f "${d}loading" ] || continue
+            fw_name=$(sed -n 's/^FIRMWARE=//p' "${d}uevent" 2>/dev/null)
+            if [ -n "$fw_name" ] && [ -f "/lib/firmware/$fw_name" ]; then
+                echo 1 > "${d}loading" 2>/dev/null || true
+                cat "/lib/firmware/$fw_name" > "${d}data" 2>/dev/null || true
+                echo 0 > "${d}loading" 2>/dev/null || true
+                log "loaded firmware $fw_name into $d"
+            fi
+        done
+        sleep 1
+        i=$((i + 1))
+    done
+) &
+
+# 0b. Restore system clock from TWL6030 PMIC RTC (or /var/lib/musegadget/last-clock)
+#     immediately on cold boot so TLS 1.3 certificates are never rejected as "not yet valid".
+hwclock -s -u 2>/dev/null || true
+if [ "$(date +%Y 2>/dev/null || echo 1970)" -lt 2026 ] && [ -s /var/lib/musegadget/last-clock ]; then
+    date -u -s "$(cat /var/lib/musegadget/last-clock)" >/dev/null 2>&1 || true
+fi
+
+# Symlink persistent Chibi Nova sprite packs into /run/glass (zero RAM duplication)
+[ -f /var/lib/musegadget/nova_sprites.bin ] && [ ! -e /run/glass/nova_sprites.bin ] && ln -sf /var/lib/musegadget/nova_sprites.bin /run/glass/nova_sprites.bin
+[ -f /var/lib/musegadget/nova_fullbody.bin ] && [ ! -e /run/glass/nova_fullbody.bin ] && ln -sf /var/lib/musegadget/nova_fullbody.bin /run/glass/nova_fullbody.bin
+[ -s /var/lib/musegadget/volume ] && cp -f /var/lib/musegadget/volume /run/glass/volume 2>/dev/null || echo 100 > /run/glass/volume
+[ -s /var/lib/musegadget/brightness ] && GLASS_BRIGHTNESS="$(cat /var/lib/musegadget/brightness 2>/dev/null || echo 120)"
+
+# Initialize default HUD state on Card 7 (Full-Body Chibi Nova + HUD)
+[ -s /run/glass/card ] || echo 7 > /run/glass/card
+[ -s /run/glass/active-card ] || echo 7 > /run/glass/active-card
+[ -s /run/glass/nova-state ] || echo "READY" > /run/glass/nova-state
+[ -s /run/glass/voice-state ] || echo "IDLE" > /run/glass/voice-state
+[ -s /run/glass/nova-user ] || echo "TAP TEMPLE TO SPEAK..." > /run/glass/nova-user
+[ -s /run/glass/nova-reply ] || echo "NOVA IS ONLINE. TAP TEMPLE TO TALK, SWIPE TO SWITCH MODES, OR PRESS CAMERA BTN." > /run/glass/nova-reply
+
 ip link set lo up
 
-# 1. USB RNDIS network lifeline (172.16.42.1/24; host gets 172.16.42.2 via udhcpd)
+# 1. USB RNDIS network lifeline (172.16.42.1/24; host gets 172.16.42.2 via udhcpd or the USB dock daemon)
 if ifname=$(/usr/sbin/glass-gadget 2>>/run/glass/rcS.log); then
     log "USB RNDIS gadget active on $ifname (172.16.42.1/24)"
     ip addr add 172.16.42.1/24 dev "$ifname" 2>/dev/null || true
     ip link set "$ifname" up
+    ip route replace default via 172.16.42.2 dev "$ifname" metric 400 2>/dev/null || true
+    [ -s /etc/resolv.conf ] || echo "nameserver 1.1.1.1" > /etc/resolv.conf
     sed "s/@IF@/$ifname/" /etc/glass/udhcpd.conf.in > /run/glass/udhcpd.conf
     if command -v udhcpd >/dev/null 2>&1; then
         udhcpd /run/glass/udhcpd.conf
     elif command -v busybox-extras >/dev/null 2>&1; then
         busybox-extras udhcpd /run/glass/udhcpd.conf
     fi
-    # Start a point-to-point USB RNDIS backup root shell on 172.16.42.1:23 alongside Dropbear SSH
-    if [ -x /bin/busybox-extras ]; then
+    if [ -f /etc/prism/bench ] && [ -x /bin/busybox-extras ]; then
         /bin/busybox-extras telnetd -l /bin/sh -b 172.16.42.1:23 2>/dev/null || true
     fi
 else
     log "USB gadget setup returned non-zero; continuing with ttyO2 serial and display"
 fi
+
+# Set OMAP4 CPU frequency governor to ondemand (300 MHz idle floor) for thermal/battery efficiency
+echo ondemand > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
 
 # 2. Himax HX7309 640x360 LCoS prism display bring-up on stock 3.4.94 kernel
 p=/sys/devices/platform/omapdss/manager2/panel-notle-dpi
@@ -57,12 +121,40 @@ if [ -x /usr/bin/fb-hello ]; then
     log "$fb_out"
 fi
 
-# 4. Optional Wi-Fi auto-join if a network block is already configured (M2+)
+# 4. Configure default TWL6040 bone-conduction audio routing while keeping usb_mux in USB mode
+/usr/sbin/glass-audio-route usb >/dev/null 2>&1 || true
+
+# 5. Wi-Fi auto-join + NTP clock sync + musegadget WebSocket daemon startup + Wi-Fi keepalive watchdog
 if [ -x /usr/sbin/glass-wifi ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ] &&
    grep -q 'network=' /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null; then
     log "stored Wi-Fi configuration found; starting glass-wifi up"
-    /usr/sbin/glass-wifi up >> /run/glass/rcS.log 2>&1 &
+    nohup /bin/sh -c '
+        trap "" HUP
+        /usr/sbin/glass-wifi up >> /run/glass/rcS.log 2>&1 || true
+        ntpd -n -q -p 162.159.200.1 -p 162.159.200.123 -p pool.ntp.org 2>/dev/null || true
+        if [ "$(date +%Y 2>/dev/null || echo 1970)" -ge 2026 ]; then
+            hwclock -w -u 2>/dev/null || true
+            date -u +"%Y-%m-%d %H:%M:%S" > /var/lib/musegadget/last-clock 2>/dev/null || true
+        fi
+        if [ -x /usr/bin/musegadget ] && [ -s /var/lib/musegadget/pairing.json ]; then
+            mkdir -p /run/dbus
+            dbus-daemon --system 2>/dev/null || true
+            nohup /usr/bin/musegadget -v run --run-as root >/run/glass/musegadget-service.log 2>&1 </dev/null &
+        fi
+        while true; do
+            sleep 15
+            if ! ip -4 addr show wlan0 2>/dev/null | grep -q "inet "; then
+                echo on > /sys/power/state 2>/dev/null || true
+                /usr/sbin/glass-wifi up >> /run/glass/rcS.log 2>&1 || true
+            fi
+        done
+    ' >/dev/null 2>&1 </dev/null &
 fi
 
-log "M0 boot complete: kernel $(uname -r), ssh root@172.16.42.1, serial ttyO2 115200n8"
+# 6. Start glass-agentd control API on port 8080 if python3 is present
+if [ -x /usr/sbin/glass-agentd ] && command -v python3 >/dev/null 2>&1; then
+    nohup /usr/sbin/glass-agentd >/run/glass/glass-agentd.log 2>&1 </dev/null &
+fi
+
+log "Glass OS boot complete: kernel $(uname -r), Wi-Fi + USB ready"
 exit 0

@@ -69,6 +69,7 @@ static unsigned g_anim_tick = 0;
 static int g_smooth_rms = 0;
 static int g_toast_ticks = 0;
 static char g_toast_msg[64] = "";
+static int g_settings_row = 0;
 
 static void load_sprite_pack_from(struct nova_sprite_pack *pk, const char *const *paths) {
     if (pk->blob)
@@ -309,6 +310,7 @@ static void read_sysfs(const char *path, char *out, size_t n, const char *fallba
 }
 
 static void ensure_panel_on(int do_reset) {
+    write_sysfs("/sys/bus/i2c/devices/4-0035/don_doff_enable", "1\n");
     const char *p = "/sys/devices/platform/omapdss/manager2/panel-notle-dpi";
     if (access(p, F_OK) != 0)
         return;
@@ -320,6 +322,23 @@ static void ensure_panel_on(int do_reset) {
     write_sysfs("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/brightness", "120\n");
     write_sysfs("/sys/devices/platform/omapfb/graphics/fb0/blank", "0\n");
     write_sysfs("/sys/devices/platform/omapfb/graphics/fb0/mode", "U:640x360p-312\n");
+    write_sysfs("/run/glass/prism-power", "AWAKE\n");
+}
+
+static void set_prism_sleep(int sleep_on) {
+    /* NOTE: Never write "1" to /sys/devices/platform/omapfb/graphics/fb0/blank on the
+     * stock Android XE24 3.4.94 kernel — fb_blank(1) triggers Android early_suspend,
+     * which suspends the Broadcom bcmdhd Wi-Fi driver! Powering down panel-notle-dpi/enabled
+     * turns off the Himax HX7309 LCoS LED directly without suspending Wi-Fi. */
+    if (sleep_on) {
+        write_sysfs("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/enabled", "0\n");
+        write_sysfs("/run/glass/prism-power", "SLEEP\n");
+    } else {
+        write_sysfs("/sys/power/state", "on\n");
+        write_sysfs("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/enabled", "1\n");
+        write_sysfs("/sys/devices/platform/omapfb/graphics/fb0/blank", "0\n");
+        write_sysfs("/run/glass/prism-power", "AWAKE\n");
+    }
 }
 
 static void put_px(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
@@ -533,7 +552,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
 
         snprintf(buf, sizeof buf, "HCI0: %s (3MBPS)", bt_mac);
         draw_str(fbm, stride, w, h, 20, 86, buf, 2, 0xFFFFFFFFu, 0xFF000000u);
-        draw_str(fbm, stride, w, h, 20, 114, "NAME: MUSEGADGETE591A4 (LE ADV)", 2, 0xFF64D2FFu, 0xFF000000u);
+        draw_str(fbm, stride, w, h, 20, 114, "NAME: MUSEGADGET<SUFFIX> (LE ADV)", 2, 0xFF64D2FFu, 0xFF000000u);
         draw_str(fbm, stride, w, h, 20, 142, "UUID: 7FDD3D1C-38EA-46CF-8B46...", 2, 0xFFE0E0E0u, 0xFF000000u);
         draw_str(fbm, stride, w, h, 20, 170, "GATT: CMD 0XFD02 / NOTIFY 0XFD03", 2, 0xFFFFD60Au, 0xFF000000u);
         draw_str(fbm, stride, w, h, 20, 198, "SHIM: LIBGLASS_BLE_SHIM (MTU 23)", 2, 0xFF5E5CE6u, 0xFF000000u);
@@ -557,7 +576,7 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
 
         fill_rect(fbm, stride, w, h, 20, h - 54, w - 40, 2, 0xFF48484Au);
         draw_str(fbm, stride, w, h, 20, h - 42, "GLASS-OS // M4 AUDIO VERIFIED", 2, 0xFFAEAEB2u, 0xFF000000u);
-    } else if (card_idx >= 4 && card_idx <= 9) {
+    } else if (card_idx >= 4 && card_idx <= 10) {
         char n_state[64], n_user[160], n_reply[320], n_rms[32], cam_act[16];
         read_sysfs("/run/glass/nova-state", n_state, sizeof n_state, "");
         if (!n_state[0])
@@ -618,7 +637,62 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
             mode_col = 0xFF30D158u;
         }
 
-        if (card_idx == 9) {
+        if (card_idx == 10) {
+            /* CARD 10: Interactive On-Device Prism Settings & OS Switcher */
+            draw_nova_fullbody(fbm, stride, w, h, 10, 44, 156, 208, av_state, av_frame);
+
+            fill_rect(fbm, stride, w, h, 10, 260, 156, 86, 0xFF0E121Eu);
+            fill_rect(fbm, stride, w, h, 10, 260, 156, 2, 0xFF00E5FFu);
+            snprintf(buf, sizeof buf, "BAT:%s%% %s", cap, usb_on[0] == '1' ? "USB" : "BAT");
+            draw_str(fbm, stride, w, h, 16, 268, buf, 1, bat_col, 0xFF0E121Eu);
+            snprintf(buf, sizeof buf, "W:%s", wlan_ip);
+            draw_str(fbm, stride, w, h, 16, 286, buf, 1, 0xFFFFD60Au, 0xFF0E121Eu);
+            snprintf(buf, sizeof buf, "U:%s", usb_ip);
+            draw_str(fbm, stride, w, h, 16, 304, buf, 1, 0xFF64D2FFu, 0xFF0E121Eu);
+            draw_str(fbm, stride, w, h, 16, 324, "PWR BTN: SETTINGS", 1, 0xFFAEAEB2u, 0xFF0E121Eu);
+
+            unsigned rx = 178, rw = w - rx - 12;
+            draw_str(fbm, stride, w, h, rx, 14, "PRISM SETTINGS & OS", 2, 0xFFFFD60Au, 0xFF000000u);
+            snprintf(buf, sizeof buf, "[%d/6]", g_settings_row + 1);
+            draw_str(fbm, stride, w, h, w - 12 - (unsigned)strlen(buf) * 18, 14, buf, 2, 0xFF00E5FFu, 0xFF000000u);
+            fill_rect(fbm, stride, w, h, rx, 38, rw, 2, 0xFF00E5FFu);
+
+            char vol_s[16], bri_s[16], aud_s[16], slp_s[16];
+            read_sysfs("/run/glass/volume", vol_s, sizeof vol_s, "");
+            if (!vol_s[0]) read_sysfs("/var/lib/musegadget/volume", vol_s, sizeof vol_s, "100");
+            read_sysfs("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/brightness", bri_s, sizeof bri_s, "120");
+            read_sysfs("/run/glass/audio-route", aud_s, sizeof aud_s, "bone");
+            read_sysfs("/run/glass/sleep-timeout-sec", slp_s, sizeof slp_s, "15");
+            int slp_v = atoi(slp_s);
+
+            char rows[6][32];
+            snprintf(rows[0], sizeof rows[0], "VOLUME    : %s%%", vol_s);
+            snprintf(rows[1], sizeof rows[1], "BRIGHTNESS: %s / 255", bri_s);
+            snprintf(rows[2], sizeof rows[2], "AUDIO OUT : %s",
+                     strcmp(aud_s, "earbud") == 0 ? "USB EARBUD" : "BONE TRANSDUC");
+            snprintf(rows[3], sizeof rows[3], "DESK SLEEP: %s",
+                     slp_v <= 0 ? "ALWAYS AWAKE" : (slp_v <= 15 ? "15S OFF-HEAD" : "60S IDLE"));
+            snprintf(rows[4], sizeof rows[4], "SWITCH OS : -> NEXUS OS");
+            snprintf(rows[5], sizeof rows[5], "EXIT MENU : -> NOVA HUD");
+
+            for (int r_i = 0; r_i < 6; r_i++) {
+                unsigned ry = 46 + (unsigned)r_i * 45;
+                int sel = (r_i == g_settings_row);
+                uint32_t bg = sel ? 0xFF162238u : 0xFF0E111Au;
+                uint32_t fg = sel ? 0xFFFFD60Au : 0xFFE5E5EAu;
+                uint32_t bar = sel ? 0xFF00E5FFu : 0xFF2C2C38u;
+                fill_rect(fbm, stride, w, h, rx, ry, rw, 40, bg);
+                fill_rect(fbm, stride, w, h, rx, ry, 5, 40, bar);
+                char rline[36];
+                snprintf(rline, sizeof rline, "%c %s", sel ? '>' : ' ', rows[r_i]);
+                draw_str(fbm, stride, w, h, rx + 10, ry + 12, rline, 2, fg, bg);
+            }
+
+            draw_str(fbm, stride, w, h, rx, 326,
+                     "SWIPE: MOVE CURSOR   TAP: CHANGE / SELECT", 1, 0xFF00E5FFu, 0xFF000000u);
+            draw_str(fbm, stride, w, h, rx, 340,
+                     "BACK POWER BTN: OPEN/CLOSE SETTINGS ANYTIME", 1, 0xFFAEAEB2u, 0xFF000000u);
+        } else if (card_idx == 9) {
             /* CARD 9: Full-Screen Camera Photo Viewfinder + Full-Body Chibi Nova PiP & Caption */
             if (load_camera_frame()) {
                 draw_camera_rect(fbm, stride, w, h, 0, 0, w, h);
@@ -1025,8 +1099,8 @@ static void render_frame(uint32_t *fbm, unsigned stride, unsigned w, unsigned h,
     }
 }
 
-static const int g_mode_ring[10] = { 7, 8, 9, 5, 6, 4, 0, 1, 2, 3 };
-static const char *const g_card_names[10] = {
+static const int g_mode_ring[11] = { 7, 8, 9, 10, 5, 6, 4, 0, 1, 2, 3 };
+static const char *const g_card_names[11] = {
     "M1 PRISM KERNEL",
     "M2 WIFI & TLS 1.3",
     "M3 MUSE BLE PAIR",
@@ -1036,11 +1110,12 @@ static const char *const g_card_names[10] = {
     "FACE PORTRAIT",
     "FULL-BODY + HUD",
     "FULL-BODY STANDUP",
-    "CAMERA SNAP + PIP"
+    "CAMERA SNAP + PIP",
+    "PRISM SETTINGS"
 };
 
 static void set_active_card(int next_card, const char *trig) {
-    if (next_card < 0 || next_card > 9) next_card = 7;
+    if (next_card < 0 || next_card > 10) next_card = 7;
     char cbuf[16];
     snprintf(cbuf, sizeof cbuf, "%d\n", next_card);
     write_sysfs("/run/glass/card", cbuf);
@@ -1049,15 +1124,86 @@ static void set_active_card(int next_card, const char *trig) {
     g_toast_ticks = 22;
 }
 
+static void activate_settings_row(int *keep_run_out) {
+    char buf[32], out[32];
+    if (g_settings_row == 0) {
+        read_sysfs("/run/glass/volume", buf, sizeof buf, "");
+        if (!buf[0]) read_sysfs("/var/lib/musegadget/volume", buf, sizeof buf, "100");
+        int v = atoi(buf);
+        if (v < 20) v = 20;
+        else if (v >= 100) v = 20;
+        else v += 20;
+        snprintf(out, sizeof out, "%d\n", v);
+        write_sysfs("/run/glass/volume", out);
+        write_sysfs("/var/lib/musegadget/volume", out);
+        snprintf(g_toast_msg, sizeof g_toast_msg, "VOLUME: %d%%", v);
+        g_toast_ticks = 20;
+        int rc = system("/usr/bin/glass-wav chime listen >/dev/null 2>&1 &");
+        (void)rc;
+    } else if (g_settings_row == 1) {
+        read_sysfs("/sys/class/backlight/notle_bl/brightness", buf, sizeof buf, "255");
+        int bl = atoi(buf);
+        int next_bl = 255;
+        if (bl >= 230) next_bl = 64;
+        else if (bl < 96) next_bl = 128;
+        else if (bl < 160) next_bl = 192;
+        else next_bl = 255;
+        snprintf(out, sizeof out, "%d\n", next_bl);
+        write_sysfs("/sys/class/backlight/notle_bl/brightness", out);
+        write_sysfs("/var/lib/musegadget/brightness", out);
+        snprintf(g_toast_msg, sizeof g_toast_msg, "BRIGHTNESS: %d%%", (next_bl * 100) / 255);
+        g_toast_ticks = 20;
+    } else if (g_settings_row == 2) {
+        read_sysfs("/run/glass/audio-route", buf, sizeof buf, "bone");
+        if (strstr(buf, "earbud")) {
+            int rc = system("/usr/sbin/glass-audio-route bone >/dev/null 2>&1");
+            (void)rc;
+            snprintf(g_toast_msg, sizeof g_toast_msg, "AUDIO: BONE CONDUCTION");
+        } else {
+            int rc = system("/usr/sbin/glass-audio-route earbud >/dev/null 2>&1");
+            (void)rc;
+            snprintf(g_toast_msg, sizeof g_toast_msg, "AUDIO: USB EARBUD");
+        }
+        g_toast_ticks = 20;
+    } else if (g_settings_row == 3) {
+        read_sysfs("/run/glass/sleep-timeout-sec", buf, sizeof buf, "15");
+        int tmo = atoi(buf);
+        int next_tmo = 15;
+        if (tmo == 15) next_tmo = 30;
+        else if (tmo == 30) next_tmo = 60;
+        else if (tmo == 60) next_tmo = 0;
+        else next_tmo = 15;
+        snprintf(out, sizeof out, "%d\n", next_tmo);
+        write_sysfs("/run/glass/sleep-timeout-sec", out);
+        write_sysfs("/var/lib/musegadget/sleep-timeout-sec", out);
+        if (next_tmo == 0)
+            snprintf(g_toast_msg, sizeof g_toast_msg, "DESK SLEEP: NEVER");
+        else
+            snprintf(g_toast_msg, sizeof g_toast_msg, "DESK SLEEP: %ds", next_tmo);
+        g_toast_ticks = 20;
+    } else if (g_settings_row == 4) {
+        snprintf(g_toast_msg, sizeof g_toast_msg, "SWITCHING -> NEXUS OS");
+        g_toast_ticks = 20;
+        FILE *cf = fopen("/run/glass/choice", "w");
+        if (cf) {
+            fputs("nexus\n", cf);
+            fclose(cf);
+        }
+        if (keep_run_out) *keep_run_out = 0;
+    } else if (g_settings_row == 5) {
+        set_active_card(7, "EXIT");
+    }
+}
+
 static int step_mode_ring(int cur_card, int dir) {
     int idx = 0;
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i < 11; i++) {
         if (g_mode_ring[i] == cur_card) {
             idx = i;
             break;
         }
     }
-    idx = (idx + dir + 10) % 10;
+    idx = (idx + dir + 11) % 11;
     return g_mode_ring[idx];
 }
 
@@ -1094,7 +1240,7 @@ int main(int argc, char **argv) {
             tour_mode = 0;
         else if (strcmp(argv[i], "--card") == 0 && i + 1 < argc) {
             card_idx = atoi(argv[++i]);
-            if (card_idx < 0 || card_idx > 9) card_idx = 0;
+            if (card_idx < 0 || card_idx > 10) card_idx = 0;
             tour_mode = 0;
         } else
             fb_path = argv[i];
@@ -1181,6 +1327,7 @@ int main(int argc, char **argv) {
     unsigned long touch_events = 0;
     char last_ev[32] = "READY";
     uint32_t *backbuf = malloc(map_len);
+    uint32_t *prevbuf = calloc(1, map_len);
     if (!backbuf)
         backbuf = fbm;
 
@@ -1188,34 +1335,109 @@ int main(int argc, char **argv) {
     int tp_down = 0, tp_Cur_x = 0, tp_x0 = 0, tp_x1 = 0;
     int tp_frame_contacts = 0, tp_seen_pos = 0, tp_max_fingers = 1;
     long long tp_t0 = 0;
+    long long last_active_ms = now_ms_monotonic();
+    int prism_asleep = 0;
+    int seen_on_head = 0;
 
     do {
+        long long loop_now = now_ms_monotonic();
+        char don_buf[16];
+        read_sysfs("/sys/bus/i2c/devices/4-0035/don_doff", don_buf, sizeof don_buf, "");
+        int don_val = (don_buf[0] == '1') ? 1 : (don_buf[0] == '0' ? 0 : -1);
+        if (don_val == 1) {
+            seen_on_head = 1;
+            last_active_ms = loop_now;
+            if (prism_asleep) {
+                prism_asleep = 0;
+                set_prism_sleep(0);
+                snprintf(g_toast_msg, sizeof g_toast_msg, "ON HEAD: PRISM AWAKE");
+                g_toast_ticks = 18;
+            }
+        }
+
+        if (access("/run/glass/wake", F_OK) == 0) {
+            unlink("/run/glass/wake");
+            last_active_ms = loop_now;
+            if (prism_asleep) {
+                prism_asleep = 0;
+                set_prism_sleep(0);
+            }
+        }
+
         char pin_card[16];
         read_sysfs("/run/glass/active-card", pin_card, sizeof pin_card, "");
         if (!pin_card[0])
             read_sysfs("/run/glass/card", pin_card, sizeof pin_card, "");
         int active_card = pin_card[0] ? atoi(pin_card) : card_idx;
-        if (active_card < 0 || active_card > 9) active_card = 0;
-        render_frame(backbuf, stride, w, h, uts.release, mem_mb, board_rev,
-                     touch_events, last_ev, active_card);
-        if (backbuf != fbm && memcmp(fbm, backbuf, map_len) != 0)
-            memcpy(fbm, backbuf, map_len);
+        if (active_card < 0 || active_card > 10) active_card = 0;
 
-        var.xoffset = 0;
-        var.yoffset = 0;
-        ioctl(fb, FBIOPAN_DISPLAY, &var);
+        char st_buf[32], rms_buf[16];
+        read_sysfs("/run/glass/nova-state", st_buf, sizeof st_buf, "READY");
+        read_sysfs("/run/glass/nova-rms", rms_buf, sizeof rms_buf, "0");
+        int rms_v = atoi(rms_buf);
+        int is_busy = (g_toast_ticks > 0 || rms_v > 50 ||
+                       (st_buf[0] && strncmp(st_buf, "READY", 5) != 0 &&
+                        strncmp(st_buf, "IDLE", 4) != 0 &&
+                        strncmp(st_buf, "WIFI", 4) != 0 &&
+                        strncmp(st_buf, "NO SPEECH", 9) != 0));
+        if (is_busy) {
+            last_active_ms = loop_now;
+            if (prism_asleep) {
+                prism_asleep = 0;
+                set_prism_sleep(0);
+            }
+        }
 
-        if (dispc && fix.smem_start) {
-            dispc[DISPC_GFX_BA0 / 4] = (uint32_t)fix.smem_start;
-            dispc[DISPC_GFX_BA1 / 4] = (uint32_t)fix.smem_start;
-            dispc[DISPC_CONTROL2 / 4] |= DISPC_GO_LCD2;
+        if (!once && !prism_asleep && don_val != 1 && !is_busy) {
+            char tmo_buf[16];
+            read_sysfs("/run/glass/sleep-timeout-sec", tmo_buf, sizeof tmo_buf,
+                       (seen_on_head && don_val == 0) ? "15" : "60");
+            long tmo_s = atol(tmo_buf);
+            if (tmo_s > 0 && (loop_now - last_active_ms) >= tmo_s * 1000LL) {
+                prism_asleep = 1;
+                set_prism_sleep(1);
+            }
+        }
+
+        if (!prism_asleep) {
+            render_frame(backbuf, stride, w, h, uts.release, mem_mb, board_rev,
+                         touch_events, last_ev, active_card);
+            int frame_changed = 1;
+            if (prevbuf && backbuf != fbm) {
+                frame_changed = (memcmp(prevbuf, backbuf, map_len) != 0);
+                if (frame_changed)
+                    memcpy(prevbuf, backbuf, map_len);
+            }
+            if (frame_changed) {
+                if (backbuf != fbm)
+                    memcpy(fbm, backbuf, map_len);
+
+                var.xoffset = 0;
+                var.yoffset = 0;
+                ioctl(fb, FBIOPAN_DISPLAY, &var);
+
+                if (dispc && fix.smem_start) {
+                    dispc[DISPC_GFX_BA0 / 4] = (uint32_t)fix.smem_start;
+                    dispc[DISPC_GFX_BA1 / 4] = (uint32_t)fix.smem_start;
+                    dispc[DISPC_CONTROL2 / 4] |= DISPC_GO_LCD2;
+                }
+            }
         }
 
         if (once)
             break;
 
-        int r = poll(pfds, (nfds_t)nfds, active_card >= 4 ? 80 : 2500);
+        int poll_ms = prism_asleep ? 1000 : 2500;
+        if (!prism_asleep && active_card >= 4) {
+            poll_ms = is_busy ? 75 : 600;
+        }
+        int r = poll(pfds, (nfds_t)nfds, poll_ms);
         if (r > 0) {
+            last_active_ms = now_ms_monotonic();
+            if (prism_asleep) {
+                prism_asleep = 0;
+                set_prism_sleep(0);
+            }
             for (int i = 0; i < nfds; i++) {
                 if (pfds[i].revents & POLLIN) {
                     struct input_event ev;
@@ -1225,13 +1447,21 @@ int main(int argc, char **argv) {
                             snprintf(last_ev, sizeof last_ev, "T%u C%u V%d",
                                      ev.type, ev.code, ev.value);
                         }
-                        /* Physical Camera Button (KEY_CAMERA = 212) -> Snap Photo & Send to Nova! */
+                        /* Physical Camera Button (KEY_CAMERA = 212) or Back Power Button (KEY_POWER = 116) */
                         if (ev.type == EV_KEY && ev.value == 0) {
                             if (ev.code == 212 && access("/usr/sbin/glass-muse-camera", X_OK) == 0) {
                                 snprintf(g_toast_msg, sizeof g_toast_msg, "CAM: SNAP PHOTO -> NOVA");
                                 g_toast_ticks = 26;
                                 int rc = system("/usr/sbin/glass-muse-camera >/run/glass/camera-tap.log 2>&1 &");
                                 (void)rc;
+                            } else if (ev.code == 116) {
+                                /* Back Temple Power Button -> Toggle Settings & OS Switcher (Card 10) */
+                                int next_c = (active_card == 10) ? 7 : 10;
+                                g_settings_row = 0;
+                                card_idx = next_c;
+                                active_card = next_c;
+                                tour_mode = 0;
+                                set_active_card(next_c, "PWR");
                             } else {
                                 int next_c = step_chibi_only(active_card);
                                 card_idx = next_c;
@@ -1269,21 +1499,36 @@ int main(int argc, char **argv) {
                                 long long dt = t_now - tp_t0;
                                 tp_down = 0;
                                 if (adx >= 180) {
-                                    /* Temple swipe forward / backward -> switch prism mode! */
                                     int dir = (dx > 0) ? 1 : -1;
-                                    int next_c = step_mode_ring(active_card, dir);
-                                    card_idx = next_c;
-                                    active_card = next_c;
-                                    tour_mode = 0;
-                                    set_active_card(next_c, dir > 0 ? "SWIPE+" : "SWIPE-");
+                                    if (active_card == 10) {
+                                        /* Inside Settings (Card 10): swipe moves selected row! */
+                                        g_settings_row = (g_settings_row + dir + 6) % 6;
+                                    } else {
+                                        /* Temple swipe forward / backward -> switch prism mode! */
+                                        int next_c = step_mode_ring(active_card, dir);
+                                        card_idx = next_c;
+                                        active_card = next_c;
+                                        tour_mode = 0;
+                                        set_active_card(next_c, dir > 0 ? "SWIPE+" : "SWIPE-");
+                                    }
                                 } else if (dt < 550) {
                                     if (tp_max_fingers >= 2) {
-                                        /* Two-finger tap -> cycle Chibi Nova modes */
-                                        int next_c = step_chibi_only(active_card);
+                                        /* Two-finger tap -> cycle Chibi Nova modes (or exit Settings) */
+                                        int next_c = (active_card == 10) ? 7 : step_chibi_only(active_card);
                                         card_idx = next_c;
                                         active_card = next_c;
                                         tour_mode = 0;
                                         set_active_card(next_c, "TAP2");
+                                    } else if (active_card == 10) {
+                                        /* Single tap on Settings (Card 10) -> Activate selected row! */
+                                        int prev_row = g_settings_row;
+                                        activate_settings_row(&keep_running);
+                                        if (prev_row == 5) {
+                                            card_idx = 7;
+                                            active_card = 7;
+                                        }
+                                        if (!keep_running)
+                                            break;
                                     } else {
                                         /* Single tap on temple -> Start / Send / Stop Nova Voice Turn! */
                                         char cur_st[64];
@@ -1300,6 +1545,15 @@ int main(int argc, char **argv) {
                                             (void)rc;
                                         }
                                     }
+                                } else if (tp_max_fingers >= 2 && dt >= 2000 && access("/usr/bin/prismd", X_OK) == 0) {
+                                    /* Two-finger long-hold (>= 2.0s) -> Launch Stage-2 Dual-Boot Chooser (Vox / Nexus OS) */
+                                    FILE *cf = fopen("/run/glass/choice", "w");
+                                    if (cf) {
+                                        fputs("chooser\n", cf);
+                                        fclose(cf);
+                                    }
+                                    keep_running = 0;
+                                    break;
                                 }
                             }
                             tp_frame_contacts = 0;

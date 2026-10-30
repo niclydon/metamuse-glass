@@ -7,8 +7,8 @@ The stack, layer by layer, with the three problems that actually decided whether
 - **Boot chain (Google's, untouched):** mask ROM → X-Loader → U-Boot-based bootloader → kernel. No public source exists for the Glass bootloaders, so this layer is treated as fixed. Only the boot partition's contents are ours.
 - **Kernel (Google's, untouched):** the stock XE24 kernel, Linux 3.4.94, extracted from the factory image and verified by SHA-256 (`83476052…`) before every repack. Its own command line already enables a serial console on ttyO2.
 - **Userland (ours):** Alpine Linux armv7 (musl, BusyBox) as an initramfs, assembled on the build host with apk in `--no-scripts` mode so no ARM code runs during the build, then checked statically (every ELF ARM EABI5 hard-float, every interpreter resolvable inside the root). No systemd; a BusyBox init and rc scripts run the show.
-- **UI (ours):** native C programs writing the framebuffer at /dev/fb0 (the Himax HX7309 LCoS is a plain DSS framebuffer device; nothing in its path needs Android). The HUD program renders the milestone cards, call state, telemetry, and the animated full-screen modes.
-- **Voice (Meta's SDK, our plumbing):** the Muse Gadget SDK's Linux client, `musegadget`, hand-installed for a non-systemd armv7 system, plus the wrappers in `rootfs-overlay/usr/sbin/` (`glass-muse-voice`, `glass-muse-camera`) and the C bridges in `src/`.
+- **UI (ours):** native C programs writing the framebuffer at /dev/fb0 (the Himax HX7309 LCoS is a plain DSS framebuffer device; nothing in its path needs Android). The HUD program renders the milestone cards, call state, telemetry, and the animated full-screen modes, plus an on-device settings card (volume, brightness, audio output, desk sleep, OS switch) driven from the temple touchpad, with the back power button as its shortcut.
+- **Voice (Meta's SDK, our plumbing):** the Muse Gadget SDK's Linux client, `musegadget`, hand-installed for a non-systemd armv7 system, plus the wrappers in `rootfs-overlay/usr/sbin/` (`glass-muse-voice`, `glass-muse-camera`) and the C bridges in `src/`. Since firmware 0.2.3 the voice path is fully realtime: microphone and reply stream simultaneously, and the transcripts render on the prism word by word as they are spoken.
 
 ## Hard problem 1: a modern userland on a 3.4 kernel
 
@@ -31,3 +31,11 @@ The SDK's voice client is strict: WAV in and out, PCM16LE mono at exactly 24 kHz
 ## Networking
 
 Wi-Fi is wpa_supplicant over nl80211 (the kernel has WEXT compiled out), with the BCM4330 firmware and board calibration placed where the driver looks for them (`firmware/README.md`). A current CA store rides in the initramfs, which is what lets a 2014 kernel make 2026 TLS connections. Credentials are never baked into images in this repo: the build takes the SSID and passphrase from environment variables and stores only the derived PSK, and the on-device `glass-wifi` tool prompts rather than embeds.
+
+## The control plane
+
+Once the gadget worked, the glasses grew the interface everything else on the desk already had. `glass-agentd` (`rootfs-overlay/usr/sbin/glass-agentd`) is a small HTTP daemon on the device serving JSON and PNG endpoints: status and telemetry, prism screenshots, archived voice and camera turns, and controls for cards, brightness, audio routing, camera stills and clips, voice turns, OS switching, and over-the-air boot updates with SHA-256 readback. On Wi-Fi every route requires a Bearer token (held on the device at `/etc/prism/token`, mode 0600); SSH is keys-only via `rootfs-overlay/etc/glass/sshd`. A `/mirror` page streams the prism at a few frames per second for a browser.
+
+On the host, `mcp/glass_mcp.py` wraps the daemon in 19 MCP tools (`glass_status`, `glass_health_audit`, `glass_screenshot`, `glass_set_card`, `glass_set_hud`, `glass_set_brightness`, `glass_set_audio_route`, `glass_chime`, `glass_voice_turn`, `glass_camera_snap`, `glass_camera_record`, `glass_prism_record`, `glass_ask_nova`, `glass_notify_hud`, `glass_fetch_archives`, `glass_switch_os`, `glass_ota_update`, `glass_exec`, `glass_reboot`), so an MCP-capable assistant can check the glasses' health, look through the prism, snap a photo, or reboot them into the second, local system they dual-boot via the stage-2 chooser (`rootfs-overlay/etc/glass/hud`, hot-swap under 200 ms, guarded by a two-finger hold).
+
+Site-specific values are never baked in: the unit's Wi-Fi address, its Bluetooth address, the second system's host, and the agent token all arrive through environment variables (see [BUILDING.md](BUILDING.md)).

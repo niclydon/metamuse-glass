@@ -1,0 +1,15 @@
+#!/bin/sh
+# /etc/glass/sshd: Hardened Dropbear SSH daemon for Google Glass (Vox + NexusOS).
+# Enforces SSH public-key authentication only (-s -g: no password or blank-password
+# logins allowed). Listens on USB RNDIS (172.16.42.1:22) and Wi-Fi (when PRISM_SSH_WLAN=1,
+# default 1 for untethered glass-mcp operation).
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+PRISM_SSH_WLAN=1
+[ -f /etc/prism/prismd.conf ] && . /etc/prism/prismd.conf
+set -- -F -E -R -s -g -K 5
+if [ "${PRISM_SSH_WLAN:-1}" = 1 ]; then
+    set -- "$@" -p 22
+else
+    set -- "$@" -p 172.16.42.1:22
+fi
+exec /usr/sbin/dropbear "$@"

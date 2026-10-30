@@ -18,7 +18,9 @@ set -eu
 
 CONF=/etc/wpa_supplicant/wpa_supplicant.conf
 FW_BIN=/system/etc/firmware/fw_bcmdhd.bin
+[ -f "$FW_BIN" ] || FW_BIN=/mnt/system/vendor/firmware/fw_bcmdhd.bin
 FW_CAL=/system/etc/firmware/bcmdhd.cal
+[ -f "$FW_CAL" ] || FW_CAL=/mnt/system/etc/wifi/bcmdhd.cal
 
 die() { echo "glass-wifi: $*" >&2; exit 1; }
 
@@ -84,7 +86,7 @@ case "${1:-}" in
         printf '\n%s\n' "$block" >> "$CONF"
         chmod 600 "$CONF"
         if [ -S /run/wpa_supplicant/wlan0 ]; then
-            wpa_cli -i wlan0 reconfigure >/dev/null
+            wpa_cli -p /run/wpa_supplicant -i wlan0 reconfigure >/dev/null
         fi
         echo "glass-wifi: stored network '$ssid' (derived PSK only)"
         ;;
@@ -95,7 +97,7 @@ case "${1:-}" in
         # Wait up to 15s for COMPLETED state, then request DHCP and sync NTP
         i=0
         while [ $i -lt 30 ]; do
-            if wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
+            if wpa_cli -p /run/wpa_supplicant -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
                 break
             fi
             sleep 0.5
@@ -133,13 +135,13 @@ case "${1:-}" in
         ;;
     scan)
         start_supplicant
-        wpa_cli -i wlan0 scan >/dev/null
+        wpa_cli -p /run/wpa_supplicant -i wlan0 scan >/dev/null
         sleep 3
-        wpa_cli -i wlan0 scan_results
+        wpa_cli -p /run/wpa_supplicant -i wlan0 scan_results
         ;;
     status)
         if [ -S /run/wpa_supplicant/wlan0 ]; then
-            wpa_cli -i wlan0 status | grep -E '^(ssid|bssid|freq|key_mgmt|wpa_state|ip_address)=' || true
+            wpa_cli -p /run/wpa_supplicant -i wlan0 status | grep -E '^(ssid|bssid|freq|key_mgmt|wpa_state|ip_address)=' || true
         fi
         ip -4 addr show wlan0 2>/dev/null | grep inet || true
         ;;

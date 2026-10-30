@@ -6,7 +6,13 @@ set -eu
 HCD="/system/etc/firmware/bcm4330.hcd"
 BT_UART="${BT_UART:-/dev/ttyO1}"
 BT_BAUD="${BT_BAUD:-3000000}"
-BT_BDADDR="${BT_BDADDR:-f8:8f:ca:25:df:ca}"
+# The unit's Bluetooth address is device-specific and is never baked in:
+# set BT_BDADDR in the environment, or store it in /var/lib/musegadget/bdaddr
+# (it is printed by the stock system and by `hciconfig` after a stock boot).
+BT_BDADDR="${BT_BDADDR:-}"
+if [ -z "$BT_BDADDR" ] && [ -s /var/lib/musegadget/bdaddr ]; then
+    BT_BDADDR="$(cat /var/lib/musegadget/bdaddr)"
+fi
 
 log() {
     echo "[glass-bt] $*"
@@ -72,6 +78,10 @@ if command -v dbus-daemon >/dev/null 2>&1; then
 fi
 
 # Attach BCM4330 UART HCI transport on /dev/ttyO1
+if [ -z "$BT_BDADDR" ]; then
+    log "ERROR: BT_BDADDR is not set; export your unit's Bluetooth address first (see header)"
+    exit 1
+fi
 if ! hciconfig hci0 >/dev/null 2>&1; then
     log "Attaching BCM4330 via hciattach on $BT_UART ($BT_BAUD baud, BDADDR $BT_BDADDR)..."
     hciattach "$BT_UART" bcm43xx "$BT_BAUD" flow - "$BT_BDADDR"

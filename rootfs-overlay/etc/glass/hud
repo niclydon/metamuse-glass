@@ -1,0 +1,108 @@
+#!/bin/sh
+# /etc/glass/hud: Stage-2 Dual-Boot Chooser & Display Supervisor for Google Glass.
+# Respawned by /etc/inittab. Supports both:
+#   - vox   (GlassOS / Meta Muse Nova Chibi HUD: /usr/bin/fb-hello)
+#   - nexus (NexusOS Glass / Prism HUD:          /usr/bin/prismd)
+#
+# At boot (or when /run/glass/choice is "chooser" or empty), runs `prismd --choose`
+# on the 640x360 LCoS prism:
+#   - Single tap on touchpad -> boots GlassOS (Vox / Nova)
+#   - Forward/backward swipe (or timeout) -> boots NexusOS (Prism)
+#
+# To hot-swap between GlassOS and NexusOS at runtime without rebooting:
+#   echo vox   > /run/glass/choice && killall prismd fb-hello
+#   echo nexus > /run/glass/choice && killall prismd fb-hello
+#   rm -f /run/glass/choice        && killall prismd fb-hello   # re-open boot chooser
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /run/glass /run/glass/cap
+log() { echo "$(date +%T 2>/dev/null || echo 00:00:00) hud: $*" >> /run/glass/hud.log; }
+
+CHOOSE_S=5
+[ -f /etc/prism/prismd.conf ] && . /etc/prism/prismd.conf
+
+# Check if a persistent default OS is set on userdata (/var/lib/musegadget/default-os)
+if [ ! -s /run/glass/choice ] && [ -s /var/lib/musegadget/default-os ]; then
+    def_os=$(cat /var/lib/musegadget/default-os 2>/dev/null | tr -d ' \t\r\n')
+    if [ "$def_os" = "vox" ] || [ "$def_os" = "nexus" ]; then
+        echo "$def_os" > /run/glass/choice
+        log "loaded persistent default-os: $def_os"
+    fi
+fi
+
+cur_choice=$(cat /run/glass/choice 2>/dev/null | tr -d ' \t\r\n')
+if [ -z "$cur_choice" ] || [ "$cur_choice" = "chooser" ]; then
+    if [ -x /usr/bin/prismd ]; then
+        log "launching Stage-2 Prism boot chooser (${PRISM_CHOOSE_S:-$CHOOSE_S}s)"
+        choice=$(/usr/bin/prismd --choose "${PRISM_CHOOSE_S:-$CHOOSE_S}" --fb /dev/fb0 \
+                     --input-dir /dev/input --cap-dir /run/glass/cap 2>>/run/glass/prismd.log) || true
+        after_choice=$(cat /run/glass/choice 2>/dev/null | tr -d ' \t\r\n')
+        if [ "$after_choice" = "vox" ] || [ "$after_choice" = "nexus" ]; then
+            choice="$after_choice"
+        else
+            [ "$choice" = vox ] || choice=nexus
+            echo "$choice" > /run/glass/choice
+        fi
+        log "chooser selected: $choice"
+    else
+        echo vox > /run/glass/choice
+        log "prismd not installed; defaulting to vox"
+    fi
+fi
+
+case "$(cat /run/glass/choice 2>/dev/null | tr -d ' \t\r\n')" in
+    nexus)
+        if [ ! -x /usr/bin/prismd ]; then
+            log "prismd missing; falling back to vox"
+            echo vox > /run/glass/choice
+            exec /usr/bin/fb-hello --no-panel-reset
+        fi
+        if [ ! -s /etc/prism/token ]; then
+            log "no /etc/prism/token: prismd showing no-token card"
+            /usr/bin/prismd --host "${PRISM_HOST:-0.0.0.0}" --port "${PRISM_PORT:-7872}" \
+                --token-file /etc/prism/token --fb /dev/fb0 2>>/run/glass/prismd.log || true
+            sleep 5
+            exit 1
+        fi
+        # The second system's host address is site-specific: set PRISM_HOST
+        # in the environment for the Wi-Fi path. The USB dock link
+        # (172.16.42.2) is probed automatically and needs no configuration.
+        TARGET_HOST="${PRISM_HOST:-}"
+        TARGET_IFACE="wlan0"
+        if [ "$(cat /sys/class/net/rndis0/carrier 2>/dev/null || echo 0)" = "1" ] &&
+           ping -c 1 -W 1 172.16.42.2 >/dev/null 2>&1; then
+            TARGET_HOST="172.16.42.2"
+            TARGET_IFACE="rndis0"
+        fi
+        if [ -z "$TARGET_HOST" ]; then
+            log "PRISM_HOST is not set and no USB dock link is up; cannot start prismd"
+            sleep 5
+            exit 1
+        fi
+        log "starting NexusOS (prismd -> ${TARGET_HOST}:${PRISM_PORT:-7872} via ${TARGET_IFACE})"
+        : > /run/glass/prismd.log
+        (
+            tail -f /run/glass/prismd.log 2>/dev/null | while IFS= read -r line; do
+                case "$line" in
+                    *"power button: unbound"*)
+                        echo vox > /run/glass/choice
+                        echo 7 > /run/glass/card
+                        echo 7 > /run/glass/active-card
+                        killall prismd 2>/dev/null || true
+                        exit 0
+                        ;;
+                esac
+            done
+        ) &
+        WATCH_PID=$!
+        /usr/bin/prismd --host "${TARGET_HOST}" --port "${PRISM_PORT:-7872}" \
+            --path "${PRISM_PATH:-/link}" --node "${PRISM_NODE:-prism}" \
+            --token-file /etc/prism/token --fb /dev/fb0 --input-dir /dev/input \
+            --cap-dir /run/glass/cap --wlan "${TARGET_IFACE}" --presence-s 60 --ack 2>>/run/glass/prismd.log || true
+        kill "$WATCH_PID" 2>/dev/null || true
+        exit 0
+        ;;
+    *)
+        log "starting GlassOS (Vox / fb-hello)"
+        exec /usr/bin/fb-hello --no-panel-reset
+        ;;
+esac

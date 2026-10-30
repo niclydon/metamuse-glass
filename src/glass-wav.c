@@ -166,6 +166,35 @@ static int pcm_open_34(const char *dev_path, int is_capture,
     return fd;
 }
 
+static int read_volume_pct(void) {
+    static const char *const paths[] = {
+        "/run/glass/volume",
+        "/var/lib/musegadget/volume",
+        NULL
+    };
+    for (int i = 0; paths[i]; i++) {
+        FILE *f = fopen(paths[i], "r");
+        if (f) {
+            char b[16] = "";
+            if (fgets(b, sizeof b, f)) {
+                fclose(f);
+                int v = atoi(b);
+                if (v >= 5 && v <= 150) return v;
+            } else {
+                fclose(f);
+            }
+        }
+    }
+    return 100;
+}
+
+static inline int16_t scale_vol(int32_t s, int vol_pct) {
+    int32_t v = (s * vol_pct) / 100;
+    if (v > 32767) v = 32767;
+    else if (v < -32768) v = -32768;
+    return (int16_t)v;
+}
+
 static void write_rms_file(int rms_val) {
     char buf[24];
     int n = snprintf(buf, sizeof buf, "%d\n", rms_val);
@@ -201,6 +230,7 @@ static int cmd_chime(const char *kind, const char *dev_path) {
     unsigned total = (unsigned)(hw_rate * dur);
     int16_t buf[1024 * 2];
     unsigned pos = 0;
+    int vol_pct = read_volume_pct();
     while (pos < total && !stop_flag) {
         unsigned chunk = total - pos;
         if (chunk > 1024) chunk = 1024;
@@ -212,7 +242,7 @@ static int cmd_chime(const char *kind, const char *dev_path) {
             unsigned local = idx % half;
             if (local < 240) env = (double)local / 240.0;
             else if (half - local < 480) env = (double)(half - local) / 480.0;
-            int16_t s = (int16_t)(sin(2.0 * 3.14159265358979323846 * freq * idx / hw_rate) * 6500.0 * env);
+            int16_t s = scale_vol((int32_t)(sin(2.0 * 3.14159265358979323846 * freq * idx / hw_rate) * 6500.0 * env), vol_pct);
             buf[2 * i] = s;
             buf[2 * i + 1] = s;
         }
@@ -319,12 +349,14 @@ static int cmd_play_mp3(const char *in_path, const char *dev_path) {
         off += (size_t)info.frame_bytes;
         if (samples <= 0 || info.hz <= 0 || info.channels <= 0) continue;
 
+        int vol_pct = read_volume_pct();
         uint32_t step = (uint32_t)(((uint64_t)info.hz << 16) / hw_rate);
         unsigned out_frames = 0;
         for (int i = 0; i < samples; i++) {
             int32_t cur_s = (info.channels == 2)
                 ? ((int32_t)pcm_frame[2 * i] + (int32_t)pcm_frame[2 * i + 1]) / 2
                 : pcm_frame[i];
+            cur_s = scale_vol(cur_s, vol_pct);
             while (frac < 65536 && out_frames < 8192) {
                 int16_t v = (int16_t)(prev_s + (((cur_s - prev_s) * (int32_t)frac) >> 16));
                 if (hw_ch == 2) {
@@ -477,11 +509,13 @@ static int cmd_play(const char *in_path, const char *dev_path) {
         size_t frames_read = fread(in_buf, in_ch * sizeof(int16_t), 1024, f);
         if (frames_read == 0) break;
 
+        int vol_pct = read_volume_pct();
         unsigned out_frames = 0;
         for (size_t i = 0; i < frames_read; i++) {
             int32_t cur_s = (in_ch == 2)
                 ? ((int32_t)in_buf[2 * i] + (int32_t)in_buf[2 * i + 1]) / 2
                 : in_buf[i];
+            cur_s = scale_vol(cur_s, vol_pct);
             while (frac < 65536) {
                 int16_t v = (int16_t)(prev_s + (((cur_s - prev_s) * (int32_t)frac) >> 16));
                 if (hw_ch == 2) {
@@ -519,6 +553,173 @@ static int cmd_play(const char *in_path, const char *dev_path) {
     ioctl(fd, K_DRAIN);
     close(fd);
     fclose(f);
+    return 0;
+}
+
+static int cmd_stream_play(const char *dev_path) {
+    unsigned hw_rate = 48000, hw_ch = 2;
+    int fd = pcm_open_34(dev_path, 0, &hw_rate, &hw_ch);
+    if (fd < 0 && strcmp(dev_path, "/dev/snd/pcmC0D0p") != 0)
+        fd = pcm_open_34("/dev/snd/pcmC0D0p", 0, &hw_rate, &hw_ch);
+    if (fd < 0) return 1;
+
+    uint32_t in_rate = 24000;
+    uint32_t step = (uint32_t)(((uint64_t)in_rate << 16) / hw_rate);
+    uint32_t frac = 0;
+    int32_t prev_s = 0;
+    int16_t in_buf[1024];
+    int16_t out_buf[4096 * 2];
+    uint8_t *raw_in = (uint8_t *)in_buf;
+    size_t carry = 0;
+
+    while (!stop_flag) {
+        if (access("/run/glass/stop-call", F_OK) == 0) {
+            ioctl(fd, K_DROP);
+            break;
+        }
+        ssize_t n = read(STDIN_FILENO, raw_in + carry, sizeof(in_buf) - carry);
+        if (n <= 0) {
+            if (n < 0 && (errno == EINTR || errno == EAGAIN))
+                continue;
+            break;
+        }
+        size_t total_b = carry + (size_t)n;
+        size_t samples = total_b / 2;
+        carry = total_b & 1;
+
+        int vol_pct = read_volume_pct();
+        unsigned out_frames = 0;
+        for (size_t i = 0; i < samples; i++) {
+            int32_t cur_s = scale_vol(in_buf[i], vol_pct);
+            while (frac < 65536 && out_frames < 4096) {
+                int16_t v = (int16_t)(prev_s + (((cur_s - prev_s) * (int32_t)frac) >> 16));
+                if (hw_ch == 2) {
+                    out_buf[2 * out_frames] = v;
+                    out_buf[2 * out_frames + 1] = v;
+                } else {
+                    out_buf[out_frames] = v;
+                }
+                out_frames++;
+                frac += step;
+            }
+            frac -= 65536;
+            prev_s = cur_s;
+        }
+        if (carry)
+            raw_in[0] = raw_in[samples * 2];
+
+        int16_t *p = out_buf;
+        k_uframes rem = out_frames;
+        int rms = compute_pcm16_rms(out_buf, out_frames, hw_ch);
+        write_rms_file(rms);
+        while (rem > 0 && !stop_flag) {
+            struct k_xferi x = {0, p, rem};
+            if (ioctl(fd, K_WRITEI, &x) < 0) {
+                if (errno == EINTR || errno == EAGAIN) continue;
+                if (errno == EPIPE) { ioctl(fd, K_PREPARE); continue; }
+                rem = 0;
+                break;
+            }
+            rem -= (k_uframes)x.result;
+            p += (size_t)x.result * hw_ch;
+        }
+    }
+
+    write_rms_file(0);
+    ioctl(fd, K_DRAIN);
+    close(fd);
+    return 0;
+}
+
+static int cmd_stream_mic(double duration_s, const char *dev_path) {
+    unsigned hw_rate = 48000, hw_ch = 2;
+    int fd = pcm_open_34(dev_path, 1, &hw_rate, &hw_ch);
+    if (fd < 0 && strcmp(dev_path, "/dev/snd/pcmC0D0c") != 0)
+        fd = pcm_open_34("/dev/snd/pcmC0D0c", 1, &hw_rate, &hw_ch);
+    if (fd < 0) return 1;
+
+    uint32_t out_rate = 24000;
+    uint32_t lead_silence = 8400;   /* 0.35s leading silence so server_vad arms immediately */
+    uint32_t trail_silence = 15600; /* 0.65s trailing silence so server_vad fires speech_stopped */
+    uint32_t max_speech_samples = (uint32_t)(out_rate * duration_s);
+
+    int16_t zero_buf[960];
+    memset(zero_buf, 0, sizeof zero_buf);
+    uint32_t rem_lead = lead_silence;
+    while (rem_lead > 0) {
+        uint32_t n = rem_lead > 960 ? 960 : rem_lead;
+        if (fwrite(zero_buf, sizeof(int16_t), n, stdout) != n) break;
+        rem_lead -= n;
+    }
+    fflush(stdout);
+
+    unlink("/run/glass/stop-record");
+    ioctl(fd, K_START);
+
+    int16_t in_buf[1024 * 2];
+    int16_t out_buf[1024];
+    uint32_t written = 0;
+    uint32_t step = (uint32_t)(((uint64_t)hw_rate << 16) / out_rate);
+    uint32_t acc_pos = 0;
+    int speech_chunks = 0;
+    int quiet_after_speech_chunks = 0;
+
+    while (written < max_speech_samples && !stop_flag) {
+        if (access("/run/glass/stop-record", F_OK) == 0 ||
+            access("/run/glass/stop-call", F_OK) == 0) {
+            unlink("/run/glass/stop-record");
+            break;
+        }
+        struct k_xferi x = {0, in_buf, 1024};
+        if (ioctl(fd, K_READI, &x) < 0) {
+            if (errno == EINTR || errno == EAGAIN) continue;
+            if (errno == EPIPE) { ioctl(fd, K_PREPARE); ioctl(fd, K_START); continue; }
+            break;
+        }
+        k_uframes got = (k_uframes)x.result;
+        unsigned out_n = 0;
+        while ((acc_pos >> 16) < got && written + out_n < max_speech_samples) {
+            unsigned idx = acc_pos >> 16;
+            int16_t s = (hw_ch == 2)
+                ? (int16_t)(((int32_t)in_buf[2 * idx] + (int32_t)in_buf[2 * idx + 1]) / 2)
+                : in_buf[idx];
+            int32_t boosted = ((int32_t)s * 7) / 2; /* 3.5x digital mic boost */
+            if (boosted > 32000) boosted = 32000;
+            if (boosted < -32000) boosted = -32000;
+            out_buf[out_n++] = (int16_t)boosted;
+            acc_pos += step;
+        }
+        if ((acc_pos >> 16) >= got)
+            acc_pos -= (got << 16);
+        if (out_n > 0) {
+            int rms = compute_pcm16_rms(out_buf, out_n, 1);
+            write_rms_file(rms * 2);
+            if (fwrite(out_buf, sizeof(int16_t), out_n, stdout) != out_n)
+                break;
+            fflush(stdout);
+            written += out_n;
+            if (rms > 320) {
+                speech_chunks++;
+                quiet_after_speech_chunks = 0;
+            } else if (speech_chunks >= 16) {
+                quiet_after_speech_chunks++;
+                if (quiet_after_speech_chunks >= 58) { /* ~1.25s silence after speech -> auto-commit */
+                    break;
+                }
+            }
+        }
+    }
+
+    uint32_t rem_trail = trail_silence;
+    while (rem_trail > 0) {
+        uint32_t n = rem_trail > 960 ? 960 : rem_trail;
+        if (fwrite(zero_buf, sizeof(int16_t), n, stdout) != n) break;
+        rem_trail -= n;
+    }
+    fflush(stdout);
+    write_rms_file(0);
+    ioctl(fd, K_DROP);
+    close(fd);
     return 0;
 }
 
@@ -642,6 +843,21 @@ int main(int argc, char **argv) {
         double freq = argc >= 4 ? atof(argv[3]) : 440.0;
         double dur = argc >= 5 ? atof(argv[4]) : 2.0;
         return cmd_synth(argv[2], freq, dur);
+    }
+    if (argc >= 2 && strcmp(argv[1], "stream-play") == 0) {
+        const char *dev = "/dev/snd/pcmC0D0p";
+        for (int i = 2; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-d") == 0) dev = argv[++i];
+        }
+        return cmd_stream_play(dev);
+    }
+    if (argc >= 2 && strcmp(argv[1], "stream-mic") == 0) {
+        double dur = (argc >= 3 && argv[2][0] != '-') ? atof(argv[2]) : 12.0;
+        const char *dev = "/dev/snd/pcmC0D2c";
+        for (int i = 2; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-d") == 0) dev = argv[++i];
+        }
+        return cmd_stream_mic(dur, dev);
     }
     if (argc >= 3 && strcmp(argv[1], "play") == 0) {
         const char *dev = "/dev/snd/pcmC0D0p";

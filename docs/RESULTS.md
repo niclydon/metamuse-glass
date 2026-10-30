@@ -4,13 +4,13 @@
 
 ### Summary
 
-Built the complete, hardware-free M0/M1 boot-image pipeline under [`muse-gadget-overlay/`](file://the project repo/muse-gadget-overlay). The pipeline unpacks the archived XE24 factory image (`signed-glass_1-img-5585826.zip`), preserves Google's stock `3.4.94` kernel byte-for-byte (`5,090,464` bytes, SHA-256 `83476052edc649505c480700d88e1a7d743232d6181b970556722cf4bdb79def`), extracts the Broadcom Wi-Fi/Bluetooth and OMAP4 ABE audio firmware blobs from `system.img`, cross-compiles native `musl` ARMv7 userland utilities (`fb-hello`, `glass-wav`, `glass-fb`, `glass-console`) with 32-bit `time_t` (`-U_TIME_BITS -U_FILE_OFFSET_BITS`), stages an Alpine 3.21 `armv7` non-systemd initramfs, and repacks `out/boot-m0.img` inside the 8 MiB `boot` partition ceiling.
+Built the complete, hardware-free M0/M1 boot-image pipeline under [`muse-gadget-overlay/`](..). The pipeline unpacks the archived XE24 factory image (`signed-glass_1-img-5585826.zip`), preserves Google's stock `3.4.94` kernel byte-for-byte (`5,090,464` bytes, SHA-256 `83476052edc649505c480700d88e1a7d743232d6181b970556722cf4bdb79def`), extracts the Broadcom Wi-Fi/Bluetooth and OMAP4 ABE audio firmware blobs from `system.img`, cross-compiles native `musl` ARMv7 userland utilities (`fb-hello`, `glass-wav`, `glass-fb`, `glass-console`) with 32-bit `time_t` (`-U_TIME_BITS -U_FILE_OFFSET_BITS`), stages an Alpine 3.21 `armv7` non-systemd initramfs, and repacks `out/boot-m0.img` inside the 8 MiB `boot` partition ceiling.
 
 ### Artifact Verification (`tools/bootimg-info.py`)
 
 ```json
 {
- "file": "the project repo/muse-gadget-overlay/out/boot-m0.img",
+ "file": "out/boot-m0.img",
  "file_bytes": 8089600,
  "magic": "ANDROID!",
  "page_size": 2048,
@@ -81,28 +81,27 @@ python3 ./tools/bootimg-info.py ./muse-gadget-overlay/out/boot-m0.img
 
 ### Prism Framebuffer Gallery & Tour (`640×360` captured directly from `/dev/fb0`)
 
-![Prism Milestone Tour (M1 -> M4)](docs/screenshots/prism-milestone-tour.gif)
+*The M1 → M4 milestone-tour capture is not included in this repo (it cycles frames whose individually sanitized versions appear in this log); a montage of the same on-device captures is published at https://player.mux.com/lyqjE7U5dS3wIptPiF1YHMsHGsMhjkIdxUMGFj79VNA*
 
 | Milestone | Prism Card (`640×360`) |
 | :--- | :--- |
-| **M1 — Prism & Kernel (`[1/5]`)** | ![Card 1: M1 Prism & Kernel](docs/screenshots/card-1-m1-prism-kernel.png) |
-| **M2 — Wi-Fi & TLS 1.3 (`[2/5]`)** | ![Card 2: M2 Wi-Fi & TLS 1.3](docs/screenshots/card-2-m2-wifi-tls13.png) |
-| **M3 — Meta Muse BLE Pairing (`[3/5]`)** | ![Card 3: M3 Muse BLE Pairing](docs/screenshots/card-3-m3-muse-ble-pair.png) |
-| **M4 — Voice & Audio (`[4/5]`)** | ![Card 4: M4 Voice & Audio](docs/screenshots/card-4-m4-voice-audio.png) |
-| **M4 Chibi Nova Stage (`Card 4`)** | ![Card 4: Chibi Nova Stage](docs/screenshots/card-5-nova-chibi-live.png) |
-| **M4 Full-Screen Chibi Nova + HUD (`Card 5`)** | ![Card 5: Full-Screen Chibi Nova + HUD](docs/screenshots/card-6-nova-fullscreen-hud.png) |
-| **M4 Full-Screen Centered Portrait (`Card 6`)** | ![Card 6: Full-Screen Centered Portrait](docs/screenshots/card-7-nova-fullscreen-portrait.png) |
+| **M1 — Prism & Kernel (`[1/5]`)** | ![Card 1: M1 Prism & Kernel](screenshots/card-1-m1-prism-kernel.png) |
+| **M2 — Wi-Fi & TLS 1.3 (`[2/5]`)** | ![Card 2: M2 Wi-Fi & TLS 1.3](screenshots/card-2-m2-wifi-tls13.png) |
+| **M3 — Meta Muse BLE Pairing (`[3/5]`)** | ![Card 3: M3 Muse BLE Pairing](screenshots/card-3-m3-muse-ble-pair.png) |
+| **M4 — Voice & Audio (`[4/5]`)** | ![Card 4: M4 Voice & Audio](screenshots/card-4-m4-voice-audio.png) |
+| **M4 Chibi Nova Stage (`Card 4`)** | ![Card 4: Chibi Nova Stage](screenshots/card-5-nova-chibi-live.png) |
+| **M4 Full-Screen Chibi Nova + HUD (`Card 5`)** | ![Card 5: Full-Screen Chibi Nova + HUD](screenshots/card-6-nova-fullscreen-hud.png) |
+| **M4 Full-Screen Centered Portrait (`Card 6`)** | ![Card 6: Full-Screen Centered Portrait](screenshots/card-7-nova-fullscreen-portrait.png) |
 
-- **Full-Screen Chibi Nova Live Lip-Sync Video (MP4 with audio):** [`docs/screenshots/nova-chibi-fullscreen-live.mp4`](docs/screenshots/nova-chibi-fullscreen-live.mp4)
-- **Full-Screen Chibi Nova Live Lip-Sync Animated GIF:** [`docs/screenshots/nova-chibi-fullscreen-live.gif`](docs/screenshots/nova-chibi-fullscreen-live.gif)
-- **Live Nova Voice Call Video (MP4 with synchronized audio):** [`docs/screenshots/nova-voice-call-live.mp4`](docs/screenshots/nova-voice-call-live.mp4)
-- **Live Nova Voice Call Animated GIF:** [`docs/screenshots/nova-voice-call-live.gif`](docs/screenshots/nova-voice-call-live.gif)
-- **Milestone Tour Video (MP4):** [`docs/screenshots/prism-milestone-tour.mp4`](docs/screenshots/prism-milestone-tour.mp4)
-- **Milestone Tour Animated GIF:** [`docs/screenshots/prism-milestone-tour.gif`](docs/screenshots/prism-milestone-tour.gif)
+- **Full-Screen Chibi Nova Live Lip-Sync Video (MP4 with audio):** [`docs/screenshots/nova-chibi-fullscreen-live.mp4`](screenshots/nova-chibi-fullscreen-live.mp4)
+- **Full-Screen Chibi Nova Live Lip-Sync Animated GIF:** [`docs/screenshots/nova-chibi-fullscreen-live.gif`](screenshots/nova-chibi-fullscreen-live.gif)
+- **Live Nova Voice Call Video (MP4 with synchronized audio):** [`docs/screenshots/nova-voice-call-live.mp4`](screenshots/nova-voice-call-live.mp4)
+- **Live Nova Voice Call Animated GIF:** [`docs/screenshots/nova-voice-call-live.gif`](screenshots/nova-voice-call-live.gif)
+- **Milestone Tour Video:** not included in this repo (the tour cycles frames whose individually sanitized versions appear above); a montage of the same on-device captures is published at https://player.mux.com/lyqjE7U5dS3wIptPiF1YHMsHGsMhjkIdxUMGFj79VNA
 
 ### Hardware Provenance & Bootloader State
 - **Unit:** Google Glass Explorer Edition (`glass_1` / board `"notle"`, OMAP4430 REV 0004)
-- **Serial:** `015DB75A1700C01A`
+- **Serial:** `[unit serial redacted]`
 - **RAM:** `1 GB` (`582 MB` usable after OMAP4 carveouts)
 - **Bootloader:** `NOTLE0201` (`unlocked: yes`)
 - **Boot Method:** `fastboot boot muse-gadget-overlay/out/boot-m0.img` (`0.352s` download + boot, **zero flash writes**)
@@ -114,7 +113,7 @@ python3 ./tools/bootimg-info.py ./muse-gadget-overlay/out/boot-m0.img
 00:00:02 glass-os-rcS: panel-notle-dpi enabled (brightness 120)
 00:00:02 glass-os-rcS: fb-hello: /dev/fb0 640x360 32bpp stride=640 smem=0x9f800000 len=2764800 kernel=3.4.94-01990-g1cee760235d ram=582MB board="OMAP4430 R0004" dispc=mapped
 ```
-- **Prism Screenshot:** Captured directly from `/dev/fb0` via `./muse-gadget-overlay/build/glass-ctl.sh screenshot` and saved at [`docs/screenshots/m1-prism-framebuffer.png`](docs/screenshots/m1-prism-framebuffer.png).
+- **Prism Screenshot:** Captured directly from `/dev/fb0` via `./muse-gadget-overlay/build/glass-ctl.sh screenshot` and saved at [`docs/screenshots/m1-prism-framebuffer.png`](screenshots/m1-prism-framebuffer.png).
 - **Touchpad & Camera/Power Input:** Live input events verified on `/dev/input/event*` (`2,888` events recorded during bench handling).
 
 ---
@@ -140,11 +139,11 @@ No kernel rebuild or mainline migration is required for `musegadget` BLE GATT pe
 
 ### Root-Cause Findings & Userspace Adaptations on Kernel `3.4.94`
 1. **Broadcom Patchram Firmware Filename (`BCM4330B1.hcd`):**
-   - BlueZ `hciattach bcm43xx` queries the controller's local name (`BCM4330B1`) and searches `/lib/firmware/BCM4330B1.hcd`. Staging `/system/etc/firmware/bcm4330.hcd` at `/lib/firmware/BCM4330B1.hcd` allows `hciattach /dev/ttyO1 bcm43xx 3000000 flow - f8:8f:ca:25:df:ca` to load the patchram and switch to 3 Mbps UART cleanly (`HCI Version: 4.0 (0x6) Revision: 0x14f6`, `Name: 'USI BCM4330B1 37.4 MHz Class 1.5 ExtLNA WLCSP'`).
+   - BlueZ `hciattach bcm43xx` queries the controller's local name (`BCM4330B1`) and searches `/lib/firmware/BCM4330B1.hcd`. Staging `/system/etc/firmware/bcm4330.hcd` at `/lib/firmware/BCM4330B1.hcd` allows `hciattach /dev/ttyO1 bcm43xx 3000000 flow - [Glass BT address]` to load the patchram and switch to 3 Mbps UART cleanly (`HCI Version: 4.0 (0x6) Revision: 0x14f6`, `Name: 'USI BCM4330B1 37.4 MHz Class 1.5 ExtLNA WLCSP'`).
 2. **HCI LE Advertising Fallback (`0x08 0x0006/0x0008/0x0009/0x000a`):**
    - Linux `3.4.94` predates `MGMT_OP_READ_ADV_FEATURES` (`0x003d`, added in Linux 4.1), so `bluetoothd` registers `org.bluez.GattManager1` (`GATT application registered: /org/musegadget/app0`) but omits `org.bluez.LEAdvertisingManager1`.
-   - [`src/ble_server.py`](src/ble_server.py) falls back to the four standard Bluetooth 4.0 HCI LE commands (`LE Set Advertising Parameters`, `LE Set Advertising Data`, `LE Set Scan Response Data`, `LE Set Advertise Enable`) via `hcitool -i hci0 cmd 0x08 ...`, broadcasting the exact `MuseGadget` 128-bit service UUID (`7fdd3d1c-38ea-46cf-8b46-314ecf5f240c`), manufacturer data (`0xffff: 00`), and local name (`MuseGadget<device suffix>`).
-3. **L2CAP ATT Address Type Shim ([`src/glass-ble-shim.c`](src/glass-ble-shim.c)) & `ExchangeMTU = 23`:**
+   - [`src/ble_server.py`](../src/ble_server.py) falls back to the four standard Bluetooth 4.0 HCI LE commands (`LE Set Advertising Parameters`, `LE Set Advertising Data`, `LE Set Scan Response Data`, `LE Set Advertise Enable`) via `hcitool -i hci0 cmd 0x08 ...`, broadcasting the exact `MuseGadget` 128-bit service UUID (`7fdd3d1c-38ea-46cf-8b46-314ecf5f240c`), manufacturer data (`0xffff: 00`), and local name (`MuseGadget<device suffix>`).
+3. **L2CAP ATT Address Type Shim ([`src/glass-ble-shim.c`](../src/glass-ble-shim.c)) & `ExchangeMTU = 23`:**
    - Linux `3.4.94`'s `l2cap_sock_getname()` predates `sockaddr_l2.l2_bdaddr_type` (added in Linux 3.5), leaving `l2_bdaddr_type = 0` (`BDADDR_BR_EDR`) on `L2CAP_CID_ATT` (`4`), which caused `bluetoothd` to treat incoming LE ATT connections as BR/EDR ATT connections. Preloading `libglass_ble_shim.so` into `bluetoothd` sets `l2_bdaddr_type = BDADDR_LE_PUBLIC (1)` on `AF_BLUETOOTH` sockets with `l2_cid == 4`.
    - Linux `3.4.94`'s L2CAP layer clamps `chan->omtu` on `L2CAP_CID_ATT (4)` to `L2CAP_DEFAULT_MIN_MTU = 23` bytes. Setting `ExchangeMTU = 23` in `/etc/bluetooth/main.conf` and `_ASSUMED_MTU = 23` in `ble_server.py` keeps GATT discovery responses (`<= 23B`) and `musegadget`'s chunked notifications (`23B`, using `DEFAULT_ATT_MTU = 23`) within the 23-byte ATT frame limit with zero `EMSGSIZE` errors.
 
@@ -156,7 +155,7 @@ No kernel rebuild or mainline migration is required for `musegadget` BLE GATT pe
   "status": "ok",
   "id": "info-1",
   "device": {
-    "device_id": "[device id]",
+    "device_id": "<device-id>",
     "device_name": "Glass Muse Gadget",
     "model": "Muse Virtual Device",
     "firmware_version": "0.1.0",
@@ -167,7 +166,7 @@ No kernel rebuild or mainline migration is required for `musegadget` BLE GATT pe
 [3] Starting v5 ECDH P-256 + HKDF-SHA256 + AES-GCM-256 pairing handshake...
 [3] Received pairing_ready: status=ok
 [4] Sending encrypted pairing_client_finished...
-[4] Received decrypted pairing_confirmed: {'status': 'ok', 'id': 'pair-2', 'type': 'pairing_confirmed', 'device_id': '[device id]'}
+[4] Received decrypted pairing_confirmed: {'status': 'ok', 'id': 'pair-2', 'type': 'pairing_confirmed', 'device_id': '<device-id>'}
 [5] Testing post-pairing encrypted command (wifi_scan)...
 [5] Received decrypted wifi_scan_result: status=ok, networks=9
 ```
@@ -180,7 +179,7 @@ No kernel rebuild or mainline migration is required for `musegadget` BLE GATT pe
 Extracted the exact 24-entry mixer table and PCM configuration from `/mnt/system/lib/hw/audio.primary.glass_1.so` and `/mnt/system/lib/libtinyalsa.so`:
 - **Bone-Conduction Transducer Playback:** `/dev/snd/pcmC0D0p` (`00-00: Multimedia`), `48000 Hz` stereo `S16_LE` (`period_size = 1056`, `periods = 4`), routed via `DL1 Mixer Multimedia=1` -> `DL1 Media Playback Volume=118` -> `SDT DL Volume=120` -> `DL1 Mono Mixer=1` -> `AUDDRV_DL1_EAR_PATH` (`Earphone Playback=1`, `Earphone Playback Volume=15`).
 - **Digital Microphone (`DMic0`) Capture:** `/dev/snd/pcmC0D2c` (`00-02: Voice`), `48000 Hz` stereo `S16_LE` (`period_size = 1056`, `periods = 4`), routed via `MUX_UL10=DMic0L`, `MUX_UL11=DMic0R`, `MUX_VX0=DMic0L`, `MUX_VX1=DMic0R`, `Voice Capture Mixer Capture=1`, `DMIC1 UL Volume=146,146`, `AUDUL Voice UL Volume=120`.
-- **`glass-wav` Resampling Bridge ([`src/glass-wav.c`](src/glass-wav.c)):** Speaks the 32-bit `3.4.94` ALSA ioctl ABI directly (`SNDRV_PCM_IOCTL_HW_REFINE = 0xc25c4110`, `SNDRV_PCM_IOCTL_HW_PARAMS = 0xc25c4111`, `604` bytes), upsampling `24000 Hz` mono WAV from `musegadget` to `48000 Hz` stereo on `/dev/snd/pcmC0D0p` and decimating `48000 Hz` stereo capture from `/dev/snd/pcmC0D2c` to `24000 Hz` mono PCM16LE WAV.
+- **`glass-wav` Resampling Bridge ([`src/glass-wav.c`](../src/glass-wav.c)):** Speaks the 32-bit `3.4.94` ALSA ioctl ABI directly (`SNDRV_PCM_IOCTL_HW_REFINE = 0xc25c4110`, `SNDRV_PCM_IOCTL_HW_PARAMS = 0xc25c4111`, `604` bytes), upsampling `24000 Hz` mono WAV from `musegadget` to `48000 Hz` stereo on `/dev/snd/pcmC0D0p` and decimating `48000 Hz` stereo capture from `/dev/snd/pcmC0D2c` to `24000 Hz` mono PCM16LE WAV.
 
 ### Live Verification Output on Physical Glass
 ```text
@@ -196,14 +195,14 @@ WAV: frames=48000 rate=24000Hz ch=1 width=16bit nonzero=47882/48000 peak=1156 rm
 
 ## M4 End-to-End Live Meta Muse (**Nova**) Voice Call & Full-Screen Chibi Nova Lip-Sync (`COMPLETE & HEARD ON BONE-CONDUCTION TRANSDUCER`)
 
-![Full-Screen Chibi Nova Live Lip-Sync on Google Glass Prism](docs/screenshots/nova-chibi-fullscreen-live.gif)
+![Full-Screen Chibi Nova Live Lip-Sync on Google Glass Prism](screenshots/nova-chibi-fullscreen-live.gif)
 
-### Full-Screen Chibi Nova Avatar & Amplitude Lip-Sync ([`tools/build-nova-sprites.py`](tools/build-nova-sprites.py) + [`src/fb-hello.c`](src/fb-hello.c))
-- Built [`tools/build-nova-sprites.py`](tools/build-nova-sprites.py) to pack all **105 Chibi Nova animation frames** (`24` `IDLE`, `24` `LISTENING`, `24` `WORKING`/`THINKING`, `24` mouth-openness-graded `SPEAKING` slots from `speaking-grades.json`, plus `HAPPY`, `SLEEPY`, and `ERROR`) directly from the native `640×640` and `960×960` WaveSpeed renders into `nova_sprites_full.bin` (`240×240`, 256-color per-state palettes) and `nova_sprites_compact.bin.xz` (`155 KB` XZ, embedded inside `boot-m0.img` at `/usr/share/glass/nova_sprites.bin.xz`).
+### Full-Screen Chibi Nova Avatar & Amplitude Lip-Sync ([`tools/build-nova-sprites.py`](../tools/build-nova-sprites.py) + [`src/fb-hello.c`](../src/fb-hello.c))
+- Built [`tools/build-nova-sprites.py`](../tools/build-nova-sprites.py) to pack all **105 Chibi Nova animation frames** (`24` `IDLE`, `24` `LISTENING`, `24` `WORKING`/`THINKING`, `24` mouth-openness-graded `SPEAKING` slots from `speaking-grades.json`, plus `HAPPY`, `SLEEPY`, and `ERROR`) directly from the native `640×640` and `960×960` WaveSpeed renders into `nova_sprites_full.bin` (`240×240`, 256-color per-state palettes) and `nova_sprites_compact.bin.xz` (`155 KB` XZ, embedded inside `boot-m0.img` at `/usr/share/glass/nova_sprites.bin.xz`).
 - Applied a radial edge vignette snapping the outer starfield background to pure `#000000` (which is **transparent** on the Google Glass LCoS prism beamsplitter), and added three live Nova display modes to `fb-hello`:
-  - **Card 4 (`Diagnostic Chibi Stage`):** `160×160` Chibi Nova stage + 14-bar waveform + Muse Gadget conversation cards inside the M1 alignment frame ([`docs/screenshots/card-5-nova-chibi-live.png`](docs/screenshots/card-5-nova-chibi-live.png)).
-  - **Card 5 (`Full-Screen Split HUD`):** Borderless transparent-black prism canvas with `312×312` full-height Chibi Nova floating on the left and the Muse Gadget conversation HUD + 18-bar symmetric voice waveform on the right ([`docs/screenshots/card-6-nova-fullscreen-hud.png`](docs/screenshots/card-6-nova-fullscreen-hud.png)).
-  - **Card 6 (`Full-Screen Centered Portrait`):** Borderless `284×284` centered Chibi Nova flanked by dual vertical waveform wings and a floating bottom subtitle bar ([`docs/screenshots/card-7-nova-fullscreen-portrait.png`](docs/screenshots/card-7-nova-fullscreen-portrait.png)).
+  - **Card 4 (`Diagnostic Chibi Stage`):** `160×160` Chibi Nova stage + 14-bar waveform + Muse Gadget conversation cards inside the M1 alignment frame ([`docs/screenshots/card-5-nova-chibi-live.png`](screenshots/card-5-nova-chibi-live.png)).
+  - **Card 5 (`Full-Screen Split HUD`):** Borderless transparent-black prism canvas with `312×312` full-height Chibi Nova floating on the left and the Muse Gadget conversation HUD + 18-bar symmetric voice waveform on the right ([`docs/screenshots/card-6-nova-fullscreen-hud.png`](screenshots/card-6-nova-fullscreen-hud.png)).
+  - **Card 6 (`Full-Screen Centered Portrait`):** Borderless `284×284` centered Chibi Nova flanked by dual vertical waveform wings and a floating bottom subtitle bar ([`docs/screenshots/card-7-nova-fullscreen-portrait.png`](screenshots/card-7-nova-fullscreen-portrait.png)).
 - **Level-1 Real-Time Amplitude Lip-Sync:** During `SPEAKING`, `fb-hello` maps the smoothed playback RMS envelope (`/run/glass/nova-rms`) directly onto the 24 mouth-openness-graded `SPEAKING` frames (`slot 0` closed smile during syllable pauses up to `slot 23` wide open mouth on stressed vowels).
 
 ### Live Voice Call Summary
@@ -234,14 +233,14 @@ WAV: frames=175680 rate=24000Hz ch=1 width=16bit dur=7.32s nonzero=151053 peak=1
 ```
 
 ### Captured Audio & Video Artifacts
-- **Question WAV (`24 kHz` mono PCM16LE):** [`docs/audio/m4-nova-question-24k.wav`](docs/audio/m4-nova-question-24k.wav) (`6.00s`, `288 KB`)
-- **Nova Spoken Reply WAV (`24 kHz` mono PCM16LE):** [`docs/audio/m4-nova-reply-24k.wav`](docs/audio/m4-nova-reply-24k.wav) (`7.32s`, `336 KB`, `peak=15538`, `rms=1492.8`)
-- **Combined Question + Reply Turn WAV (`24 kHz` mono PCM16LE):** [`docs/audio/m4-nova-full-turn-24k.wav`](docs/audio/m4-nova-full-turn-24k.wav) (`13.32s`, `624 KB`)
-- **Live Prism Screenshot (`640×360` PNG):** [`docs/screenshots/card-5-nova-voice-call.png`](docs/screenshots/card-5-nova-voice-call.png)
-- **Live Prism Animated GIF (`46` `/dev/fb0` frames):** [`docs/screenshots/nova-voice-call-live.gif`](docs/screenshots/nova-voice-call-live.gif)
-- **Synchronized Video + Audio MP4:** [`docs/screenshots/nova-voice-call-live.mp4`](docs/screenshots/nova-voice-call-live.mp4)
+- **Question WAV (`24 kHz` mono PCM16LE):** [`docs/audio/m4-nova-question-24k.wav`](audio/m4-nova-question-24k.wav) (`6.00s`, `288 KB`)
+- **Nova Spoken Reply WAV (`24 kHz` mono PCM16LE):** [`docs/audio/m4-nova-reply-24k.wav`](audio/m4-nova-reply-24k.wav) (`7.32s`, `336 KB`, `peak=15538`, `rms=1492.8`)
+- **Combined Question + Reply Turn WAV (`24 kHz` mono PCM16LE):** [`docs/audio/m4-nova-full-turn-24k.wav`](audio/m4-nova-full-turn-24k.wav) (`13.32s`, `624 KB`)
+- **Live Prism Screenshot (`640×360` PNG):** [`docs/screenshots/card-5-nova-voice-call.png`](screenshots/card-5-nova-voice-call.png)
+- **Live Prism Animated GIF (`46` `/dev/fb0` frames):** [`docs/screenshots/nova-voice-call-live.gif`](screenshots/nova-voice-call-live.gif)
+- **Synchronized Video + Audio MP4:** [`docs/screenshots/nova-voice-call-live.mp4`](screenshots/nova-voice-call-live.mp4)
 
-### Bone-Conduction Transducer vs. Micro-USB Mono Earbud Routing ([`glass-audio-route`](rootfs-overlay/usr/sbin/glass-audio-route))
+### Bone-Conduction Transducer vs. Micro-USB Mono Earbud Routing ([`glass-audio-route`](../rootfs-overlay/usr/sbin/glass-audio-route))
 Disassembling `/mnt/system/lib/hw/audio.primary.glass_1.so` (`0x2b50..0x2e60`) revealed how Google Glass switches between its internal bone-conduction transducer and the detachable micro-USB mono earbud:
 1. **TWL6040 Mixer Paths:** Both `Earphone Playback Switch = 1` (`Earphone Playback Volume = 15`, bone-conduction transducer) and `Headset Left/Right Playback = HS DAC` (`Headset Playback Volume = 14`, micro-USB analog headset lines) are enabled by `glass-audio-route`.
 2. **FSA9480 / Notle Micro-USB Mux (`/sys/devices/platform/usb_mux.0/`):**
@@ -253,17 +252,17 @@ Disassembling `/mnt/system/lib/hw/audio.primary.glass_1.so` (`0x2b50..0x2e60`) r
 ## M5 — Dual Chibi Nova Packs (Full-Body Glance + Full-Face AIPI) & Touchpad/Button UI Switcher (2026-10-30)
 
 ### 1. Both Sprite Packs Co-Resident on the Glass
-- [`tools/build-nova-sprites.py`](tools/build-nova-sprites.py) builds both sprite packs in the indexed 8-bit `NOVA` format (`256`-color BGRA8888 palette per state + 1-byte indices per pixel, with outer starfield pixels snapped/vignetted to `#000000` for transparent LCoS prism edges):
+- [`tools/build-nova-sprites.py`](../tools/build-nova-sprites.py) builds both sprite packs in the indexed 8-bit `NOVA` format (`256`-color BGRA8888 palette per state + 1-byte indices per pixel, with outer starfield pixels snapped/vignetted to `#000000` for transparent LCoS prism edges):
   - **Full-Face Chibi Nova (`nova_sprites.bin`, `5.8 MB`):** `105` frames at `240×240` (`IDLE`, `LISTENING`, `WORKING/THINKING`, and `24` mouth-openness-graded `SPEAKING` frames from AIPI's `avatar-gen/nova/work/frames_*`).
   - **Full-Body Chibi Nova (`nova_fullbody.bin`, `7.7 MB`):** `105` frames at `240×320` (`3:4` aspect ratio from Glance's `832×1108` `full-idle`, `full-listening`, `full-thinking`, and `full-speaking` graded by mouth-open score in `pack/nova/speaking/grades.json`).
-- [`src/fb-hello.c`](src/fb-hello.c) `mmap`s both `/var/lib/musegadget/nova_sprites.bin` and `/var/lib/musegadget/nova_fullbody.bin` simultaneously and renders four full-screen Chibi Nova modes:
+- [`src/fb-hello.c`](../src/fb-hello.c) `mmap`s both `/var/lib/musegadget/nova_sprites.bin` and `/var/lib/musegadget/nova_fullbody.bin` simultaneously and renders four full-screen Chibi Nova modes:
   - **Card 5 (`FACE CHIBI + HUD`):** `312×312` Full-Face Chibi Nova on the left + floating Muse Gadget conversation HUD + 18-bar waveform (`docs/screenshots/card-6-nova-fullscreen-hud.png`).
   - **Card 6 (`FACE PORTRAIT`):** `284×284` Centered Full-Face Chibi Nova + dual waveform wings + bottom subtitle bar (`docs/screenshots/card-7-nova-fullscreen-portrait.png`).
   - **Card 7 (`FULL-BODY + HUD`):** `252×336` Full-Body Chibi Nova standing head-to-boots on the left + floating Muse Gadget conversation HUD + 18-bar waveform (`docs/screenshots/card-8-nova-fullbody-hud.png`).
   - **Card 8 (`FULL-BODY STANDUP`, Glance Mode):** `234×312` Centered Full-Body Chibi Nova standing head-to-boots + dual 8-bar waveform wings + floating bottom subtitle bar (`docs/screenshots/card-9-nova-fullbody-standup.png`).
 
 ### 2. Hardware Touchpad Gesture Engine & Physical Button Mode Switcher
-- Integrated the Synaptics RMI4 Multi-Touch Protocol A state machine (`ABS_MT_POSITION_X`, `SYN_MT_REPORT`, `SYN_REPORT` on `/dev/input/event*` `sensor00fn11`) and physical `KEY_CAMERA` (`code 212`) directly into [`src/fb-hello.c`](src/fb-hello.c):
+- Integrated the Synaptics RMI4 Multi-Touch Protocol A state machine (`ABS_MT_POSITION_X`, `SYN_MT_REPORT`, `SYN_REPORT` on `/dev/input/event*` `sensor00fn11`) and physical `KEY_CAMERA` (`code 212`) directly into [`src/fb-hello.c`](../src/fb-hello.c):
   - **Swipe forward / backward (`SWIPE+` / `SWIPE-`, $|\Delta x| \ge 180$) on the temple touchpad:** Cycles through the full 9-mode ring (`[7, 8, 5, 6, 4, 0, 1, 2, 3]`), persists the selected mode to `/run/glass/card`, and renders a top toast pill (`SWIPE+: FULL-BODY STANDUP`).
   - **Press physical Camera button (`KEY_CAMERA`) or two-finger tap (`TAP2`):** Cycles directly through the 4 Full-Screen Chibi Nova modes (`7 -> 8 -> 5 -> 6 -> 7`) with a `BTN:` / `TAP2:` toast banner.
   - **Single-tap (`TAP`) on the temple touchpad:** Triggers `/usr/sbin/glass-muse-voice` to start a live voice turn with Nova (`TAP: NOVA VOICE CALL`).
@@ -272,3 +271,50 @@ Disassembling `/mnt/system/lib/hw/audio.primary.glass_1.so` (`0x2b50..0x2e60`) r
   - `docs/screenshots/card-9-nova-fullbody-standup.png` (`640×360` PNG)
   - `docs/screenshots/nova-fullbody-live.gif` (`48` `/dev/fb0` frames cycling across Cards 7, 8, 5, and 6)
   - `docs/screenshots/nova-fullbody-live.mp4` (H.264 + AAC synchronized with Nova's 24 kHz spoken reply)
+
+### 3. Turnkey Tap-to-Talk Voice Call Polish ([`src/glass-wav.c`](../src/glass-wav.c) & [`usr/sbin/glass-muse-voice`](../rootfs-overlay/usr/sbin/glass-muse-voice))
+- **Bone-Conduction Confirmation Chimes (`glass-wav chime <start|think|done>`):** Synthesizes two-tone 48 kHz stereo `S32_LE` confirmation chimes directly to `/dev/snd/pcmC0D0p` (`start`: `523 Hz -> 784 Hz`, `think`: `659 Hz -> 523 Hz`, `done`: `659 Hz -> 880 Hz`).
+- **Automatic Server-Side VAD Silence Padding & Live Mic RMS:** `glass-wav record` automatically prepends `0.85s` of leading silence and appends `0.60s` of trailing silence around captured speech so Meta Muse's server-side VAD triggers `speech_started` and `speech_stopped` 100% reliably, boosts digital microphone (`DMic0`) samples by `2.5x` with soft clipping, writes live microphone RMS to `/run/glass/nova-rms` so the prism waveform animates while you speak, and auto-ends recording after `1.3s` of post-speech silence (or immediately if you tap the temple touchpad again to touch `/run/glass/stop-record`).
+- **Persistent Conversation Thread (`THREAD_ID`):** [`usr/sbin/glass-muse-voice`](../rootfs-overlay/usr/sbin/glass-muse-voice) auto-discovers `VM_ID` from `/var/lib/musegadget/pairing.json`, persists `THREAD_ID` in `/run/glass/voice.env` across turns so Nova retains full multi-turn memory, and streams `You:` and `Muse:` transcripts in real time to `/run/glass/nova-user` and `/run/glass/nova-reply`.
+
+### 4. Camera Photo -> Meta Muse (Nova) Chat & Spoken TTS Pipeline ([`usr/sbin/glass-muse-camera`](../rootfs-overlay/usr/sbin/glass-muse-camera))
+- **Boot-Time Ducati M3 Camera Firmware Loader ([`rootfs-overlay/init`](../rootfs-overlay/init)):** Immediately after mounting stock `/dev/mmcblk0p8` read-only at `/mnt/system` (`t ≈ 7.8s` of boot), `/init` symlinks `/mnt/system/vendor/firmware/ducati-m3-core0.xem3` (`6.3 MB`) to `/lib/firmware/ducati-m3-core0.xem3` and feeds `/sys/class/firmware/*/data` so the OMAP4 `remoteproc0` (`ipu_c0`) coprocessor brings up `/dev/rpmsg-omx1` (`OMX.TI.DUCATI1.VIDEO.CAMERA`) before the kernel's 120s firmware timeout.
+- **Fast C NV12 -> BGRA + PNG Scanline Converter (`glass-wav nv12-conv`):** Added `cmd_nv12_conv` to [`src/glass-wav.c`](../src/glass-wav.c) to convert the settled `640×360` NV12 camera frame from `glass-camera -y -w 640 -h 360 -n 6` into `/run/glass/camera-frame.bgra` (for instant prism rendering) and PNG scanlines (packed by Python `zlib.compress` into `/tmp/glass-photo.png` and archived in `/var/lib/musegadget/photos/`).
+- **Embedded MP3 Decoder (`minimp3.h`) in `glass-wav play`:** Integrated [`src/minimp3.h`](../src/minimp3.h) into [`src/glass-wav.c`](../src/glass-wav.c) so `glass-wav play` decodes MP3 streams from `LinkSession.stream_tts(message_id)` directly to 48 kHz stereo PCM on the OMAP4 ABE Bone-Conduction Transducer (`mm_lp`) while writing real-time RMS amplitude to `/run/glass/nova-rms` for 24 fps Chibi Nova lip-sync.
+- **Prism Camera Viewfinder Modes (`Card 7` Inset & `Card 9` Full-Screen PiP):**
+  - **Card 7 (`FULL-BODY + HUD` with `camera-active=1`):** Renders a `144×81` (`16:9`) cyan-framed Camera Snapshot Thumbnail in the top-right corner of the HUD next to `YOU: CAM SNAP` (`docs/screenshots/card-10-nova-camera-hud.png`).
+  - **Card 9 (`CAMERA SNAP + CHIBI PIP`):** Renders the captured `640×360` photo full-screen with cyan viewfinder corner ticks, `144×192` Full-Body Chibi Nova standing in the bottom-left corner lip-syncing her description, and a floating bottom caption bar (`docs/screenshots/card-11-nova-camera-pip.png`).
+- **Live Verification & Captured Camera-Chat Artifacts:**
+  - Sent a `640×360` prism frame via `POST /chat/stream` (`items: [{"type": "file", "mime_type": "image/jpeg", ...}]`, `output_modality: "voice"`).
+  - Nova inspected the image and replied:
+    > *"Cute. That's Glass running the Muse gadget overlay, right? The pixel-Nova with the starry hair and the light-up chest. I can't actually see the camera feed itself from the image, but the overlay is rendering clean, the text buffer looks stable, and the READY flag is on. That's a solid first boot check."*
+  - Downloaded Nova's `238 KB` MP3 spoken reply via `LinkSession.stream_tts` and captured the live `/dev/fb0` prism video + audio playback:
+    - `docs/screenshots/card-10-nova-camera-hud.png` (`640×360` PNG)
+    - `docs/screenshots/card-11-nova-camera-pip.png` (`640×360` PNG)
+    - `docs/screenshots/nova-camera-chat-live.gif` (`48` `/dev/fb0` frames across Cards 7, 9, and 8)
+    - `docs/screenshots/nova-camera-chat-live.mp4` (H.264 + AAC synchronized with Nova's spoken photo inspection reply)
+    - `docs/audio/m5-nova-photo-inspection-reply.mp3` (`238 KB` MP3 from `stream_tts`)
+    - `docs/audio/m5-nova-photo-inspection-reply.wav` (`1.4 MB` PCM WAV)
+
+---
+
+## M6 — Prism Core Control Plane (`glass-agentd` + `glass-mcp`), Stage-2 Dual-Boot Chooser, Thermal/Battery Pass, and Wireless eMMC Persistence (2026-10-30)
+
+### 1. Stage-2 Dual-Boot Chooser ([`rootfs-overlay/etc/glass/hud`](../rootfs-overlay/etc/glass/hud)) & Co-Resident Overlays
+- Integrated `/usr/bin/prismd` (`128,424` bytes, static ARMv7 binary from `the companion project (not included in this repo)`) alongside `/usr/bin/fb-hello` (`26 KB`) under [`rootfs-overlay/etc/glass/hud`](../rootfs-overlay/etc/glass/hud) (supervised by `/etc/inittab`):
+  - **Interactive Boot Chooser (`prismd --choose`):** Displays `Which system? tap: Vox (Muse, Nova) / swipe: Nexus OS` on the 640×360 LCoS prism (`docs/screenshots/card-12-dual-boot-chooser.png` (capture not included in this repo; it carries the early UI label)).
+  - **Sub-Second OS Hot-Swap:** Writing `vox`, `nexus`, or `chooser` to `/run/glass/choice` (via `glass_switch_os` over Wi-Fi or a deliberate **two-finger >= 2.0s hold** on the temple touchpad) switches between the MetaMuse overlay (`fb-hello`) and the NexusOS overlay (`prismd`, `docs/screenshots/card-13-nexusos-prism-live.png` (capture not included in this repo)) in `< 200 ms` without a kernel reboot.
+
+### 2. On-Device Control Plane ([`rootfs-overlay/usr/sbin/glass-agentd`](../rootfs-overlay/usr/sbin/glass-agentd)) & 18-Tool [`mcp/glass_mcp.py`](../mcp/glass_mcp.py)
+- **`glass-agentd` (`0.0.0.0:8080`):** Serves authenticated JSON + PNG endpoints over Wi-Fi (`the unit's Wi-Fi address:8080`) and USB (`172.16.42.1:8080`), plus the live interactive **Prism Mirror Web App (`GET /mirror?token=...`)** for **NexusOS**.
+- **`mcp/glass_mcp.py` (18 MCP Tools):** `glass_status`, `glass_health_audit`, `glass_screenshot`, `glass_set_card`, `glass_set_hud`, `glass_set_brightness`, `glass_set_audio_route`, `glass_chime`, `glass_voice_turn`, `glass_camera_snap`, `glass_camera_record` (1–15s video clips via [`usr/sbin/glass-camera-record`](../rootfs-overlay/usr/sbin/glass-camera-record) using Ducati H.264 or `gzip -1` streaming BGRA), `glass_prism_record`, `glass_ask_nova`, `glass_notify_hud`, `glass_fetch_archives`, `glass_switch_os`, `glass_ota_update`, and `glass_exec`.
+
+### 3. Thermal, CPU & Battery Optimization Pass + Wi-Fi Security Hardening
+- **Cached L1/L2 `prevbuf` Framebuffer Diffing & Adaptive Polling ([`src/fb-hello.c`](../src/fb-hello.c)):** Replaced uncached `/dev/fb0` `memcmp(fbm, ...)` reads with cached SDRAM `memcmp(prevbuf, backbuf, map_len)` and adaptive `poll()` intervals (`75 ms` active speech/animation, `600 ms` idle `READY` with `< 1 ms` input wake), and set CPU0/CPU1 to `ondemand` (`300 MHz` idle floor):
+  - Idle CPU clock dropped from `600 MHz` to **`300 MHz`**.
+  - Idle `fb-hello` CPU dropped from `13%` to **`2%`** (`93%` total CPU idle; `22.7 °C` battery, `36.9 °C` PCB, `525.5 MB` available RAM).
+- **SSH & Bearer-Token Hardening ([`rootfs-overlay/etc/glass/sshd`](../rootfs-overlay/etc/glass/sshd)):** Dropbear runs with `-s -g` (Ed25519 keys-only; blank-password `-B` removed; `telnetd` disabled unless `/etc/prism/bench` exists), and `glass-agentd` enforces `Authorization: Bearer <token>` on Wi-Fi against `/etc/prism/token` (`0600`).
+
+### 4. Wireless eMMC Persistence (`userdata` `/dev/mmcblk0p10` + `boot` `/dev/mmcblk0p7`) & `glasshub` Off-Head Desk Sleep
+- Formatted `/dev/mmcblk0p10` (`PARTNAME=userdata`, `14.03 GB`) as `ext4` over Wi-Fi via `/mnt/system/bin/make_ext4fs`, populated the full standalone rootfs + credentials + sprite packs + `/system/etc/firmware/{fw_bcmdhd.bin,bcmdhd.cal,bcm4330.hcd}` + `/var/lib/musegadget/voice.env` with `/etc/glass-muse-rootfs`, and flashed `out/boot-m0.img` (build output) (`8,286,208` bytes, SHA-256 `b87397d45c587fe090cd81e3ca5436737c8185b9f4408728a0f4da0e3d740cd9`, verified stock XE24 `3.4.94` kernel `83476052...`) to `/dev/mmcblk0p7` (`PARTNAME=boot`) with full readback verification.
+- Enabled `glasshub` hardware don/doff detection (`/sys/bus/i2c/devices/4-0035/don_doff_enable` and `don_doff`) in [`src/fb-hello.c`](../src/fb-hello.c) so the Himax HX7309 LCoS prism automatically powers down (`panel-notle-dpi/enabled = 0`, `fb0/blank = 1`, `0%` CPU) when placed off-head on a desk (`15s` after doffing / `60s` idle) and wakes immediately when put back on the head (`don_doff == 1`), tapped on the temple touchpad, or woken via MCP (`glass_reboot` added as the 19th tool in [`mcp/glass_mcp.py`](../mcp/glass_mcp.py)).

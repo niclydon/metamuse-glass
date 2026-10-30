@@ -1,0 +1,665 @@
+#!/usr/bin/env python3
+"""glass-agentd: Lightweight HTTP JSON + PNG control API for Google Glass (Vox).
+
+Listens on 0.0.0.0:8080 (accessible over Wi-Fi at the unit's Wi-Fi address (port 8080) and USB at
+172.16.42.1:8080) so `glass-mcp` and estate agents can inspect, control, capture
+screenshots, push prism HUD notifications, switch Chibi Nova modes, play audio,
+and trigger voice/camera turns over the wire with ~15ms latency.
+"""
+from __future__ import annotations
+
+import base64
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import struct
+import time
+import zlib
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
+
+EXPECTED_KERNEL_SHA256 = "83476052edc649505c480700d88e1a7d743232d6181b970556722cf4bdb79def"
+BOOT_PARTITION_LIMIT = 8388608
+
+
+def resolve_boot_dev() -> str:
+    try:
+        for entry in sorted(os.listdir("/sys/class/block")):
+            if not entry.startswith("mmcblk0p"):
+                continue
+            uevent = read_text(f"/sys/class/block/{entry}/uevent", "")
+            if "PARTNAME=boot\n" in (uevent + "\n"):
+                return f"/dev/{entry}"
+    except Exception:
+        pass
+    return "/dev/mmcblk0p7"
+
+CARD_NAMES = {
+    0: "M1 PRISM KERNEL",
+    1: "M2 WIFI & TLS 1.3",
+    2: "M3 MUSE BLE PAIR",
+    3: "M4 VOICE & AUDIO",
+    4: "CHIBI DIAGNOSTIC",
+    5: "FACE CHIBI + HUD",
+    6: "FACE PORTRAIT",
+    7: "FULL-BODY + HUD",
+    8: "FULL-BODY STANDUP",
+    9: "CAMERA SNAP + PIP",
+    10: "PRISM SETTINGS",
+}
+
+
+def read_text(path: str, default: str = "") -> str:
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return default
+
+
+def write_text(path: str, val: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(val)
+
+
+def bgra_to_png(bgra: bytes, w: int = 640, h: int = 360) -> bytes:
+    raw = bytearray()
+    stride = w * 4
+    for y in range(h):
+        raw.append(0)
+        row = bgra[y * stride : (y + 1) * stride]
+        raw.extend(b"".join(bytes((row[x + 2], row[x + 1], row[x])) for x in range(0, stride, 4)))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 6))
+        + chunk(b"IEND", b"")
+    )
+
+
+def get_status() -> dict:
+    card_str = read_text("/run/glass/active-card", read_text("/run/glass/card", "7"))
+    try:
+        card = int(card_str)
+    except ValueError:
+        card = 7
+    cap = read_text("/sys/class/power_supply/bq27520-0/capacity", "-1")
+    volt_uv = read_text("/sys/class/power_supply/bq27520-0/voltage_now", "0")
+    bat_status = read_text("/sys/class/power_supply/bq27520-0/status", "Unknown")
+    usb_online = read_text("/sys/class/power_supply/twl6030_usb/online", "0")
+    mux_mode = read_text("/sys/devices/platform/usb_mux.0/mux_mode", "unknown")
+    headset = read_text("/sys/devices/platform/usb_mux.0/headset", "None")
+    brightness = read_text("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/brightness", "120")
+    uptime_s = float(read_text("/proc/uptime", "0 0").split()[0])
+    recordings = []
+    if os.path.isdir("/var/lib/musegadget/recordings"):
+        recordings = sorted(os.listdir("/var/lib/musegadget/recordings"))[-20:]
+    photos = []
+    if os.path.isdir("/var/lib/musegadget/photos"):
+        photos = sorted(os.listdir("/var/lib/musegadget/photos"))[-20:]
+    return {
+        "ok": True,
+        "hostname": read_text("/etc/hostname", "glass-muse"),
+        "uptime_s": round(uptime_s, 1),
+        "battery": {
+            "capacity_pct": int(cap) if cap.lstrip("-").isdigit() else -1,
+            "voltage_mv": int(volt_uv) // 1000 if volt_uv.isdigit() else 0,
+            "status": bat_status,
+            "usb_online": usb_online == "1",
+        },
+        "audio": {
+            "mux_mode": mux_mode,
+            "headset": headset,
+        },
+        "prism": {
+            "active_card": card,
+            "card_name": CARD_NAMES.get(card, f"CARD {card}"),
+            "brightness": int(brightness) if brightness.isdigit() else 120,
+            "camera_active": read_text("/run/glass/camera-active", "0") == "1",
+            "power_state": read_text("/run/glass/prism-power", "AWAKE"),
+            "on_head": read_text("/sys/bus/i2c/devices/4-0035/don_doff", "0") == "1",
+        },
+        "nova": {
+            "state": read_text("/run/glass/nova-state", "READY"),
+            "user_text": read_text("/run/glass/nova-user", ""),
+            "reply_text": read_text("/run/glass/nova-reply", ""),
+            "rms": int(read_text("/run/glass/nova-rms", "0") or "0"),
+            "musegadget_socket": os.path.exists("/run/musegadget/musegadget.sock"),
+        },
+        "os": {
+            "active": read_text("/run/glass/choice", "vox") or "vox",
+            "default_boot": read_text("/var/lib/musegadget/default-os", "chooser") or "chooser",
+            "vox_installed": os.path.exists("/usr/bin/fb-hello"),
+            "nexus_installed": os.path.exists("/usr/bin/prismd"),
+        },
+        "recordings": recordings,
+        "photos": photos,
+    }
+
+
+def get_health_audit() -> dict:
+    st = get_status()
+    cur_ua = read_text("/sys/class/power_supply/bq27520-0/current_now", "0")
+    bat_temp_dc = read_text("/sys/class/power_supply/bq27520-0/temp", "0")
+    pcb_temp_mc = read_text("/sys/devices/platform/notle_pcb_sensor.0/temperature", "0")
+    tte_s = read_text("/sys/class/power_supply/bq27520-0/time_to_empty_avg", "0")
+    gov = read_text("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor", "unknown")
+    freq_khz = read_text("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_cur_freq", "0")
+    loadavg = read_text("/proc/loadavg", "0 0 0")
+    mem = {}
+    for line in read_text("/proc/meminfo", "").splitlines():
+        if ":" in line:
+            k, v = line.split(":", 1)
+            mem[k.strip()] = int(v.strip().split()[0])
+    sshd_cmd = subprocess.run(["/bin/sh", "-c", "ps | grep '[d]ropbear'"], capture_output=True, text=True).stdout.strip()
+    return {
+        "ok": True,
+        "battery_detail": {
+            **st["battery"],
+            "current_ma": int(cur_ua) // 1000 if cur_ua.lstrip("-").isdigit() else 0,
+            "battery_temp_c": round(int(bat_temp_dc) / 10.0, 1) if bat_temp_dc.lstrip("-").isdigit() else 0.0,
+            "pcb_temp_c": round(int(pcb_temp_mc) / 1000.0, 1) if pcb_temp_mc.lstrip("-").isdigit() else 0.0,
+            "time_to_empty_min": round(int(tte_s) / 60.0, 1) if tte_s.isdigit() else 0.0,
+        },
+        "cpu": {
+            "governor": gov,
+            "cur_freq_mhz": int(freq_khz) // 1000 if freq_khz.isdigit() else 0,
+            "loadavg": loadavg,
+        },
+        "memory_mb": {
+            "total_mb": round(mem.get("MemTotal", 0) / 1024.0, 1),
+            "free_mb": round(mem.get("MemFree", 0) / 1024.0, 1),
+            "cached_mb": round(mem.get("Cached", 0) / 1024.0, 1),
+            "available_est_mb": round((mem.get("MemFree", 0) + mem.get("Cached", 0)) / 1024.0, 1),
+        },
+        "security": {
+            "ssh_keys_only": ("-s" in sshd_cmd and "-B" not in sshd_cmd),
+            "sshd_cmdline": sshd_cmd,
+            "agent_token_configured": os.path.isfile("/etc/prism/token") and os.path.getsize("/etc/prism/token") > 0,
+        },
+    }
+
+
+class GlassHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt: str, *args) -> None:
+        pass
+
+    def _check_auth(self) -> bool:
+        client_ip = self.client_address[0] if self.client_address else ""
+        if client_ip.startswith("127.") or client_ip.startswith("172.16.42."):
+            return True
+        expected = read_text("/etc/prism/token", "")
+        if not expected:
+            return True
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and auth[7:].strip() == expected:
+            return True
+        x_tok = self.headers.get("X-Glass-Token", "").strip()
+        if x_tok and x_tok == expected:
+            return True
+        qs = parse_qs(urlparse(self.path).query)
+        q_tok = (qs.get("token") or [""])[0].strip()
+        if q_tok and q_tok == expected:
+            return True
+        self._send_json({"ok": False, "error": "unauthorized: Bearer token required on Wi-Fi"}, 401)
+        return False
+
+    def _send_json(self, data: dict, status: int = 200) -> None:
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        if length <= 0:
+            return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def do_GET(self) -> None:
+        parsed = urlparse(self.path)
+        path = parsed.path
+        if path == "/health":
+            self._send_json({"ok": True, "hostname": read_text("/etc/hostname", "glass-muse")})
+            return
+        if not self._check_auth():
+            return
+        if path in ("/", "/status"):
+            self._send_json(get_status())
+            return
+        if path == "/mirror":
+            html = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Google Glass — Live Prism Mirror (NexusOS)</title>
+<style>
+  body { background:#080a0f; color:#e2e8f0; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; margin:0; padding:20px; display:flex; flex-direction:column; align-items:center; }
+  .frame { border:2px solid #22d3ee; border-radius:10px; box-shadow:0 0 28px rgba(34,211,238,0.22); overflow:hidden; background:#000; width:640px; height:360px; position:relative; }
+  .frame img { width:640px; height:360px; display:block; image-rendering:pixelated; }
+  .bar { width:640px; display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; font-size:13px; color:#38bdf8; }
+  .controls { width:640px; display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+  button { background:#111827; color:#e2e8f0; border:1px solid #334155; border-radius:6px; padding:7px 12px; font-family:inherit; font-size:12px; cursor:pointer; }
+  button:hover { border-color:#22d3ee; color:#22d3ee; }
+  .status { width:640px; margin-top:12px; background:#0f172a; border:1px solid #1e293b; border-radius:6px; padding:10px; font-size:12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <span>GOOGLE GLASS PRISM MIRROR (640x360 LCoS)</span>
+    <span id="badge">CONNECTING...</span>
+  </div>
+  <div class="frame"><img id="prism" alt="Prism Mirror" /></div>
+  <div class="controls">
+    <button onclick="post('/voice-turn',{})">Tap Temple (Voice)</button>
+    <button onclick="stepCard(-1)">Swipe &larr;</button>
+    <button onclick="stepCard(1)">Swipe &rarr;</button>
+    <button onclick="post('/camera-snap',{})">Snap Camera &rarr; Nova</button>
+    <button onclick="post('/os/switch',{target:'vox',persist:true})">OS: Vox (Nova)</button>
+    <button onclick="post('/os/switch',{target:'nexus',persist:false})">OS: NexusOS (Prism)</button>
+    <button onclick="post('/os/switch',{target:'chooser',persist:false})">OS: Boot Chooser</button>
+  </div>
+  <div class="status" id="telemetry">Loading telemetry...</div>
+<script>
+const tok = new URLSearchParams(location.search).get('token') || '';
+let curCard = 7;
+function authUrl(p) { return p + (p.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok) + '&_t=' + Date.now(); }
+async function post(p, body) {
+  await fetch(authUrl(p), {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  refresh();
+}
+function stepCard(d) { curCard = (curCard + d + 10) % 10; post('/card', {card: curCard}); }
+async function refresh() {
+  try {
+    const r = await fetch(authUrl('/status'));
+    const st = await r.json();
+    curCard = st.prism.active_card;
+    document.getElementById('badge').textContent =
+      `OS: ${st.os.active.toUpperCase()} | BAT: ${st.battery.capacity_pct}% (${st.battery.voltage_mv}mV) | AUDIO: ${st.audio.mux_mode.toUpperCase()}`;
+    document.getElementById('telemetry').textContent =
+      `CARD ${st.prism.active_card}: ${st.prism.card_name} | STATE: ${st.nova.state}\\nYOU : ${st.nova.user_text}\\nNOVA: ${st.nova.reply_text}`;
+  } catch (e) {}
+}
+function tickImg() {
+  const img = document.getElementById('prism');
+  const next = new Image();
+  next.onload = () => { img.src = next.src; setTimeout(tickImg, 320); };
+  next.onerror = () => { setTimeout(tickImg, 1000); };
+  next.src = authUrl('/screenshot.png');
+}
+setInterval(refresh, 1200);
+refresh();
+tickImg();
+</script>
+</body>
+</html>""".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html)))
+            self.end_headers()
+            self.wfile.write(html)
+            return
+        if path == "/health-audit":
+            self._send_json(get_health_audit())
+            return
+        if path == "/download":
+            qs = parse_qs(parsed.query)
+            req_path = os.path.abspath(qs.get("path", [""])[0])
+            if not (req_path.startswith("/var/lib/musegadget/") or req_path.startswith("/tmp/") or req_path.startswith("/run/glass/")):
+                self._send_json({"ok": False, "error": "forbidden path"}, 403)
+                return
+            if not os.path.isfile(req_path):
+                self._send_json({"ok": False, "error": f"file not found: {req_path}"}, 404)
+                return
+            data = open(req_path, "rb").read()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if path == "/screenshot.png":
+            with open("/dev/fb0", "rb") as f:
+                bgra = f.read(640 * 360 * 4)
+            png = bgra_to_png(bgra, 640, 360)
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(png)))
+            self.end_headers()
+            self.wfile.write(png)
+            return
+        if path == "/screenshot.bgra":
+            with open("/dev/fb0", "rb") as f:
+                bgra = f.read(640 * 360 * 4)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(bgra)))
+            self.end_headers()
+            self.wfile.write(bgra)
+            return
+        self._send_json({"ok": False, "error": f"not found: {path}"}, 404)
+
+    def do_POST(self) -> None:
+        if not self._check_auth():
+            return
+        parsed = urlparse(self.path)
+        path = parsed.path
+        body = self._read_json()
+
+        if path == "/camera-record":
+            duration_s = max(1, min(15, int(body.get("duration_s", 10))))
+            fps = max(1, min(24, int(body.get("fps", 15))))
+            kbps = max(256, min(4000, int(body.get("kbps", 1500))))
+            res = subprocess.run(
+                ["/usr/sbin/glass-camera-record", str(duration_s), str(fps), str(kbps)],
+                capture_output=True,
+                text=True,
+                timeout=duration_s + 20,
+            )
+            out_line = (res.stdout.strip().splitlines() or ["||"])[-1]
+            parts = out_line.split("|")
+            mode = parts[0] if len(parts) > 0 else "unknown"
+            actual_fps = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else fps
+            clip_path = parts[2] if len(parts) > 2 else ""
+            size_b = os.path.getsize(clip_path) if clip_path and os.path.isfile(clip_path) else 0
+            self._send_json({
+                "ok": res.returncode == 0 and size_b > 0,
+                "mode": mode,
+                "duration_s": duration_s,
+                "fps": actual_fps,
+                "remote_path": clip_path,
+                "size_bytes": size_b,
+            })
+            return
+
+        if path == "/ask-nova":
+            prompt = str(body.get("prompt", "")).strip()
+            include_camera = bool(body.get("include_camera", False))
+            if not prompt:
+                self._send_json({"ok": False, "error": "empty prompt"}, 400)
+                return
+            if include_camera:
+                subprocess.Popen(["/usr/sbin/glass-muse-camera", prompt])
+                self._send_json({"ok": True, "mode": "camera+chat", "prompt": prompt})
+                return
+            py_script = """
+import json, os, subprocess, sys, time
+from pathlib import Path
+from musegadget.credentials import load_pairing, load_sdk_token
+from musegadget.link_client import LinkClient
+from musegadget.link_session import LinkSession
+
+prompt = sys.argv[1]
+open("/run/glass/nova-state", "w").write("THINKING\\n")
+open("/run/glass/nova-user", "w").write(prompt[:96] + "\\n")
+open("/run/glass/nova-reply", "w").write("THINKING...\\n")
+subprocess.run(["/usr/sbin/glass-audio-route"], capture_output=True)
+subprocess.run(["/usr/bin/glass-wav", "chime", "think"], capture_output=True)
+
+data_dir = Path("/var/lib/musegadget")
+pairing = load_pairing(data_dir)
+sdk_token = load_sdk_token(data_dir)
+client = LinkClient(sdk_token=sdk_token)
+vms = client.fetch_vms_with_status(pairing.access_token)
+vm = vms[0]
+sess = LinkSession(vm=vm, access_token=pairing.access_token)
+threads = sess.list_threads()
+tid = threads[0]["id"] if threads else sess.create_thread()["id"]
+
+msg_id, reply_text = sess.send_message(tid, prompt)
+open("/run/glass/nova-state", "w").write("SPEAKING\\n")
+open("/run/glass/nova-reply", "w").write((reply_text or "DONE")[:180] + "\\n")
+
+mp3_bytes = sess.stream_tts(msg_id)
+ts = int(time.time())
+turn_dir = data_dir / "recordings" / f"turn-{ts}"
+turn_dir.mkdir(parents=True, exist_ok=True)
+mp3_path = turn_dir / "reply.mp3"
+mp3_path.write_bytes(mp3_bytes)
+(turn_dir / "transcript.txt").write_text(f"USER: {prompt}\\nNOVA: {reply_text}\\n")
+subprocess.run(["/usr/bin/glass-wav", "play", str(mp3_path)], capture_output=True)
+open("/run/glass/nova-state", "w").write("READY\\n")
+open("/run/glass/nova-rms", "w").write("0\\n")
+print(json.dumps({"ok": True, "thread_id": tid, "message_id": msg_id, "reply_text": reply_text, "turn_dir": str(turn_dir)}))
+"""
+            res = subprocess.run(["/usr/bin/python3", "-c", py_script, prompt], capture_output=True, text=True, timeout=45)
+            try:
+                out = json.loads((res.stdout.strip().splitlines() or ["{}"])[-1])
+            except Exception:
+                out = {"ok": False, "stdout": res.stdout, "stderr": res.stderr}
+            self._send_json(out)
+            return
+
+        if path == "/card":
+            card = int(body.get("card", 7))
+            if card < 0 or card > 10:
+                card = 7
+            write_text("/run/glass/card", f"{card}\n")
+            write_text("/run/glass/active-card", f"{card}\n")
+            write_text("/run/glass/wake", "1\n")
+            self._send_json({"ok": True, "active_card": card, "card_name": CARD_NAMES.get(card, "")})
+            return
+
+        if path == "/hud":
+            if "state" in body:
+                write_text("/run/glass/nova-state", f"{body['state']}\n")
+            if "user_text" in body:
+                write_text("/run/glass/nova-user", f"{body['user_text']}\n")
+            if "reply_text" in body:
+                write_text("/run/glass/nova-reply", f"{body['reply_text']}\n")
+            if "camera_active" in body:
+                write_text("/run/glass/camera-active", "1\n" if body["camera_active"] else "0\n")
+            if "card" in body:
+                c = int(body["card"])
+                write_text("/run/glass/card", f"{c}\n")
+                write_text("/run/glass/active-card", f"{c}\n")
+            write_text("/run/glass/wake", "1\n")
+            self._send_json(get_status())
+            return
+
+        if path == "/brightness":
+            val = max(10, min(255, int(body.get("brightness", 120))))
+            write_text("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/brightness", f"{val}\n")
+            write_text("/sys/devices/platform/omapfb/graphics/fb0/blank", "0\n")
+            write_text("/run/glass/wake", "1\n")
+            self._send_json({"ok": True, "brightness": val})
+            return
+
+        if path == "/audio-route":
+            mode = str(body.get("mode", "auto"))
+            res = subprocess.run(["/usr/sbin/glass-audio-route", mode], capture_output=True, text=True)
+            self._send_json({"ok": res.returncode == 0, "output": res.stdout.strip()})
+            return
+
+        if path == "/chime":
+            kind = str(body.get("kind", "start"))
+            subprocess.Popen(["/usr/bin/glass-wav", "chime", kind])
+            self._send_json({"ok": True, "kind": kind})
+            return
+
+        if path == "/voice-turn":
+            subprocess.Popen(["/usr/sbin/glass-muse-voice", "--tap"])
+            self._send_json({"ok": True, "action": "glass-muse-voice --tap"})
+            return
+
+        if path == "/camera-snap":
+            prompt = str(body.get("prompt", "")).strip()
+            cmd = ["/usr/sbin/glass-muse-camera"]
+            if prompt:
+                cmd.append(prompt)
+            subprocess.Popen(cmd)
+            self._send_json({"ok": True, "action": "glass-muse-camera", "prompt": prompt})
+            return
+
+        if path == "/os/switch":
+            target = str(body.get("target", "vox")).strip().lower()
+            persist = bool(body.get("persist", False))
+            if target not in ("vox", "nexus", "chooser"):
+                self._send_json({"ok": False, "error": f"invalid target: {target}"}, 400)
+                return
+            write_text("/run/glass/choice", f"{target}\n")
+            if persist:
+                write_text("/var/lib/musegadget/default-os", f"{target}\n")
+            subprocess.Popen(["/bin/sh", "-c", "sleep 0.05; killall prismd fb-hello 2>/dev/null || true"])
+            self._send_json({
+                "ok": True,
+                "target": target,
+                "persist": persist,
+                "default_boot": read_text("/var/lib/musegadget/default-os", "chooser") or "chooser",
+            })
+            return
+
+        if path == "/ota/apply":
+            target = str(body.get("target", "")).strip().lower()
+            expected_sha = str(body.get("sha256", "")).strip().lower()
+            staged_path = str(body.get("staged_path", "")).strip()
+            reboot_after = bool(body.get("reboot", False))
+            if target not in ("vox", "nexus", "overlay", "boot"):
+                self._send_json({"ok": False, "error": f"invalid OTA target: {target}"}, 400)
+                return
+            os.makedirs("/var/lib/musegadget/ota", exist_ok=True)
+            if not staged_path:
+                payload_b64 = body.get("payload_b64", "")
+                if not payload_b64:
+                    self._send_json({"ok": False, "error": "missing staged_path or payload_b64"}, 400)
+                    return
+                staged_path = f"/var/lib/musegadget/ota/staged-{target}.bin"
+                with open(staged_path, "wb") as f:
+                    f.write(base64.b64decode(payload_b64))
+            if not os.path.isfile(staged_path):
+                self._send_json({"ok": False, "error": f"staged file missing: {staged_path}"}, 400)
+                return
+            h = hashlib.sha256()
+            size = 0
+            with open(staged_path, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+                    size += len(chunk)
+            actual_sha = h.hexdigest()
+            if expected_sha and actual_sha != expected_sha:
+                self._send_json({
+                    "ok": False,
+                    "error": f"SHA-256 mismatch: expected {expected_sha}, got {actual_sha}",
+                }, 400)
+                return
+
+            if target == "vox":
+                dest = "/usr/bin/fb-hello"
+                shutil.copy2(staged_path, dest + ".new")
+                os.chmod(dest + ".new", 0o755)
+                os.replace(dest + ".new", dest)
+                shutil.copy2(dest, "/var/lib/musegadget/ota/fb-hello")
+                subprocess.Popen(["/bin/sh", "-c", "sleep 0.05; killall fb-hello 2>/dev/null || true"])
+                self._send_json({"ok": True, "target": "vox", "sha256": actual_sha, "bytes": size})
+                return
+
+            if target == "nexus":
+                dest = "/usr/bin/prismd"
+                shutil.copy2(staged_path, dest + ".new")
+                os.chmod(dest + ".new", 0o755)
+                os.replace(dest + ".new", dest)
+                shutil.copy2(dest, "/var/lib/musegadget/ota/prismd")
+                subprocess.Popen(["/bin/sh", "-c", "sleep 0.05; killall prismd 2>/dev/null || true"])
+                self._send_json({"ok": True, "target": "nexus", "sha256": actual_sha, "bytes": size})
+                return
+
+            if target == "overlay":
+                res = subprocess.run(["/bin/tar", "-xzf", staged_path, "-C", "/"], capture_output=True, text=True)
+                if res.returncode != 0:
+                    self._send_json({"ok": False, "error": res.stderr}, 500)
+                    return
+                shutil.copy2(staged_path, "/var/lib/musegadget/ota/overlay-latest.tar.gz")
+                self._send_json({"ok": True, "target": "overlay", "sha256": actual_sha, "bytes": size})
+                return
+
+            if target == "boot":
+                if size > BOOT_PARTITION_LIMIT or size < 65536:
+                    self._send_json({"ok": False, "error": f"invalid boot.img size: {size}"}, 400)
+                    return
+                with open(staged_path, "rb") as f:
+                    hdr = f.read(2048)
+                    if hdr[:8] != b"ANDROID!":
+                        self._send_json({"ok": False, "error": "invalid ANDROID! boot header magic"}, 400)
+                        return
+                    kernel_size = struct.unpack("<I", hdr[8:12])[0]
+                    page_size = struct.unpack("<I", hdr[36:40])[0]
+                    f.seek(page_size)
+                    k_sha = hashlib.sha256(f.read(kernel_size)).hexdigest()
+                if k_sha != EXPECTED_KERNEL_SHA256:
+                    self._send_json({
+                        "ok": False,
+                        "error": f"refusing boot OTA: embedded kernel sha256 {k_sha} != stock XE24 {EXPECTED_KERNEL_SHA256}",
+                    }, 400)
+                    return
+                boot_dev = resolve_boot_dev()
+                with open(staged_path, "rb") as src, open(boot_dev, "wb") as dst:
+                    shutil.copyfileobj(src, dst, 65536)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                rb_h = hashlib.sha256()
+                rem = size
+                with open(boot_dev, "rb") as dst:
+                    while rem > 0:
+                        c = dst.read(min(65536, rem))
+                        if not c:
+                            break
+                        rb_h.update(c)
+                        rem -= len(c)
+                rb_sha = rb_h.hexdigest()
+                if rb_sha != actual_sha:
+                    self._send_json({"ok": False, "error": f"partition readback sha256 {rb_sha} != {actual_sha}"}, 500)
+                    return
+                if reboot_after:
+                    subprocess.Popen(["/bin/sh", "-c", "sync; sleep 0.5; /sbin/reboot"])
+                self._send_json({
+                    "ok": True,
+                    "target": "boot",
+                    "partition": boot_dev,
+                    "sha256": actual_sha,
+                    "kernel_sha256": k_sha,
+                    "bytes": size,
+                    "rebooting": reboot_after,
+                })
+                return
+
+        if path == "/exec":
+            cmd_str = str(body.get("command", "")).strip()
+            timeout_s = min(60, max(1, int(body.get("timeout_s", 15))))
+            res = subprocess.run(["/bin/sh", "-c", cmd_str], capture_output=True, text=True, timeout=timeout_s)
+            self._send_json({
+                "ok": res.returncode == 0,
+                "exit_code": res.returncode,
+                "stdout": res.stdout[-16384:],
+                "stderr": res.stderr[-16384:],
+            })
+            return
+
+        self._send_json({"ok": False, "error": f"unknown endpoint: {path}"}, 404)
+
+
+def main() -> None:
+    port = int(os.environ.get("GLASS_AGENT_PORT", "8080"))
+    srv = ThreadingHTTPServer(("0.0.0.0", port), GlassHandler)
+    print(f"glass-agentd listening on 0.0.0.0:{port}", flush=True)
+    srv.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

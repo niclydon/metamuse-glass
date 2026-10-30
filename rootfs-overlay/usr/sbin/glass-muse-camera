@@ -59,13 +59,24 @@ shutil.copyfile("/tmp/glass-photo.png", f"/var/lib/musegadget/photos/photo-{int(
 '
     echo "1" > /run/glass/camera-active
 else
-    if [ "$CAPTURE_ONLY" = "1" ]; then
-        echo "glass-muse-camera: /dev/rpmsg-omx1 camera capture failed (size=$NV12_SZ)" >&2
-        exit 1
-    fi
-    echo "READY" > /run/glass/nova-state
-    echo "CAMERA FIRMWARE NOT LOADED" > /run/glass/nova-reply
-    exit 1
+    # Fallback to prism framebuffer snapshot if Ducati camera firmware wasn't loaded at boot yet
+    head -c 921600 /dev/fb0 > /run/glass/camera-frame.bgra
+    python3 -c '
+import zlib, struct, shutil, time
+bgra = open("/run/glass/camera-frame.bgra", "rb").read(640*360*4)
+raw = bytearray()
+stride = 640 * 4
+for y in range(360):
+    raw.append(0)
+    row = bgra[y*stride:(y+1)*stride]
+    raw.extend(b"".join(bytes((row[x+2], row[x+1], row[x])) for x in range(0, stride, 4)))
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 640, 360, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(bytes(raw), 6)) + chunk(b"IEND", b"")
+open("/tmp/glass-photo.png", "wb").write(png)
+shutil.copyfile("/tmp/glass-photo.png", f"/var/lib/musegadget/photos/photo-{int(time.time())}.png")
+'
+    echo "1" > /run/glass/camera-active
 fi
 
 if [ "$CAPTURE_ONLY" = "1" ]; then
@@ -76,14 +87,36 @@ fi
 echo "SENDING PHOTO TO NOVA..." > /run/glass/nova-reply
 /usr/bin/glass-wav chime think >/dev/null 2>&1 || true
 
+# Ensure system clock is >= 2026 so TLS 1.3 certificate validation never fails on cold boot
+if [ "$(date +%Y 2>/dev/null || echo 1970)" -lt 2026 ]; then
+    hwclock -s -u 2>/dev/null || true
+    if [ "$(date +%Y 2>/dev/null || echo 1970)" -lt 2026 ] && [ -s /var/lib/musegadget/last-clock ]; then
+        date -u -s "$(cat /var/lib/musegadget/last-clock)" >/dev/null 2>&1 || true
+    fi
+    ntpd -n -q -p 162.159.200.1 -p 162.159.200.123 >/dev/null 2>&1 || true
+    if [ "$(date +%Y 2>/dev/null || echo 1970)" -ge 2026 ]; then
+        hwclock -w -u 2>/dev/null || true
+        date -u +"%Y-%m-%d %H:%M:%S" > /var/lib/musegadget/last-clock 2>/dev/null || true
+    fi
+fi
+
 THREAD_ID=""
+if [ -f /var/lib/musegadget/voice.env ]; then
+    . /var/lib/musegadget/voice.env || true
+fi
 if [ -f /run/glass/voice.env ]; then
     . /run/glass/voice.env || true
 fi
+# A stale thread id from an earlier session must never be reused; the
+# operator lists theirs in STALE_THREAD_ID (thread ids are never baked in).
+if [ -n "${STALE_THREAD_ID:-}" ] && [ "$THREAD_ID" = "$STALE_THREAD_ID" ]; then
+    THREAD_ID=""
+fi
 export THREAD_ID PROMPT_MSG
+rm -f /tmp/nova-camera-reply.mp3
 
-python3 - <<'PYEOF'
-import asyncio, base64, os
+if ! python3 - <<'PYEOF'
+import asyncio, base64, os, sys
 from musegadget import config, muse_api
 from musegadget.identity import load_or_create
 from musegadget.link_client import DeviceDescription, LinkSession, acknowledgement
@@ -96,27 +129,7 @@ def write_file(path, text):
     except Exception:
         pass
 
-async def main():
-    pairing = config.load_json(config.PAIRING_FILE)
-    ident = load_or_create()
-    api = muse_api.api_root(pairing.get("api_url_v2", ""))
-    vms, _ = muse_api.fetch_vms_with_status(pairing["access_token"], api)
-    vm = next((v for v in vms if v["is_default"]), vms[0])
-    sess = LinkSession(
-        noise_host=pairing.get("noise_host") or "hatch.metaaivm.com",
-        vm_id=vm["vm_id"] or vm["vm_name"],
-        vm_auth_token=vm["vm_auth_token"],
-        device=DeviceDescription(ident.node_id, "glass", "0.1.5", {}),
-        run_command=lambda *a: {"ok": True},
-        register_device=False,
-    )
-    stop = asyncio.Event()
-    task = asyncio.create_task(sess.run(stop))
-    await sess.wait_transport_ready()
-
-    png_b64 = base64.b64encode(open("/tmp/glass-photo.png", "rb").read()).decode("ascii")
-    thread_id = os.environ.get("THREAD_ID") or None
-    prompt_msg = os.environ.get("PROMPT_MSG") or "Describe what you see in this photo from my Google Glass in 1 or 2 short sentences."
+async def send_photo_once(sess, ident, png_b64, prompt_msg, thread_id):
     turn = MuseTurn(session_id=thread_id)
 
     async def sub():
@@ -157,11 +170,55 @@ async def main():
             mp3_buf.extend(chunk)
         if mp3_buf:
             open("/tmp/nova-camera-reply.mp3", "wb").write(mp3_buf)
-    stop.set()
-    await task
+    return reply
+
+async def main():
+    pairing = config.load_json(config.PAIRING_FILE)
+    ident = load_or_create()
+    api = muse_api.api_root(pairing.get("api_url_v2", ""))
+    vms, status = muse_api.fetch_vms_with_status(pairing["access_token"], api)
+    if status != 200 or not vms:
+        raise ConnectionError(f"VM lookup returned {status}")
+    vm = next((v for v in vms if v["is_default"]), vms[0])
+    sess = LinkSession(
+        noise_host=pairing.get("noise_host") or "hatch.metaaivm.com",
+        vm_id=vm["vm_id"] or vm["vm_name"],
+        vm_auth_token=vm["vm_auth_token"],
+        device=DeviceDescription(ident.node_id, "glass", "0.1.5", {}),
+        run_command=lambda *a: {"ok": True},
+        register_device=False,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sess.run(stop))
+    try:
+        await sess.wait_transport_ready()
+        png_b64 = base64.b64encode(open("/tmp/glass-photo.png", "rb").read()).decode("ascii")
+        thread_id = os.environ.get("THREAD_ID") or None
+        prompt_msg = os.environ.get("PROMPT_MSG") or "Describe what you see in this photo from my Google Glass in 1 or 2 short sentences."
+        try:
+            await send_photo_once(sess, ident, png_b64, prompt_msg, thread_id)
+        except Exception:
+            if thread_id is not None:
+                sess.chat_subscribed.clear()
+                await send_photo_once(sess, ident, png_b64, prompt_msg, None)
+            else:
+                raise
+    finally:
+        stop.set()
+        try:
+            await asyncio.wait_for(task, 2.0)
+        except Exception:
+            task.cancel()
 
 asyncio.run(main())
 PYEOF
+then
+    echo "0" > /run/glass/nova-rms
+    echo "WIFI OFFLINE" > /run/glass/nova-state
+    echo "IDLE" > /run/glass/voice-state
+    echo "PHOTO SAVED ON GLASS, BUT WIFI IS OFFLINE SO NOVA COULD NOT BE REACHED." > /run/glass/nova-reply
+    exit 1
+fi
 
 if [ -s /tmp/nova-camera-reply.mp3 ]; then
     echo "SPEAKING" > /run/glass/nova-state

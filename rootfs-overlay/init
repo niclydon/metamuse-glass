@@ -67,6 +67,12 @@ if [ "$stay" = 0 ]; then
                 umount /newroot
                 if mount -t ext4 -o rw "$dev" /newroot; then
                     log "switching root to $dev (/etc/glass-muse-rootfs)"
+                    if [ ! -f /newroot/system/etc/firmware/fw_bcmdhd.bin ] && [ -d /system ]; then
+                        cp -a /system /newroot/ 2>/dev/null || true
+                    fi
+                    if [ ! -e /newroot/vendor/firmware/fw_bcmdhd.bin ] && [ -d /vendor ]; then
+                        cp -a /vendor /newroot/ 2>/dev/null || true
+                    fi
                     umount /tmp 2>/dev/null || true
                     for m in /dev /run /proc /sys; do
                         mkdir -p "/newroot$m"

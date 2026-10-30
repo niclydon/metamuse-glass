@@ -41,3 +41,13 @@ fastboot boot out/boot-m0.img      # RAM only; a power cycle restores stock
 ```
 
 From there the milestones in [MILESTONES.md](MILESTONES.md) are the runbook: confirm the prism card, join Wi-Fi (`glass-wifi add`), then install the gadget bundle (`build/build-m3-bundle.py` produces it) and run the pairing flow with the Muse app open at Settings > Devices with Developer mode on. Pairing binds to the device that pairs — always pair on the Glass itself. Voice runs through `glass-muse-voice` once paired; expect to supply the SDK token and your call target at run time, because neither is ever baked into an image.
+
+## Operator environment variables
+
+Nothing site-specific is baked into the images or scripts in this repo; the operator supplies it at run time:
+
+- `GLASS_WIFI_SSID` / `GLASS_WIFI_PASS` — build-time Wi-Fi provisioning (only the derived PSK is stored).
+- `GLASS_IP` / `GLASS_WIFI_IP` — how `build/glass-ctl.sh` and `mcp/glass_mcp.py` find the unit on Wi-Fi (the USB RNDIS address, 172.16.42.1, is probed automatically).
+- `GLASS_AGENT_TOKEN` (or `~/.config/glass-mcp/token`) — the Bearer token `glass-agentd` requires on Wi-Fi; on the device it lives at `/etc/prism/token` (mode 0600).
+- `BT_BDADDR` — the unit's own Bluetooth address, required by `glass-bt-up` (printed by the stock system, or by `hciconfig` after a stock boot); it can also be stored on the device in `/var/lib/musegadget/bdaddr`.
+- `PRISM_HOST` — the second system's host address, used by the dual-boot chooser's Wi-Fi path (the USB dock link is probed automatically).

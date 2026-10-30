@@ -291,7 +291,9 @@ PY
                "$stage/usr/sbin/glass-wifi" \
                "$stage/usr/sbin/glass-audio-route" \
                "$stage/usr/sbin/glass-bt-up" \
-               "$stage/usr/sbin/glass-muse-voice"
+               "$stage/usr/sbin/glass-muse-voice" \
+               "$stage/usr/sbin/glass-muse-camera" \
+               "$stage/usr/sbin/glass-agentd"
 
     # Install our static ARMv7 binaries + BLE L2CAP shim
     install -m 0755 "$OUT_DIR/fb-hello" "$stage/usr/bin/fb-hello"
@@ -327,6 +329,9 @@ PY
     ln -sf /mnt/system/vendor/firmware/tesla-dsp.xe64T "$stage/lib/firmware/tesla-dsp.xe64T"
     ln -sf /mnt/system/vendor/firmware/tesla-dsp.xe64T "$stage/vendor/firmware/tesla-dsp.xe64T"
     ln -sf /mnt/system/vendor/firmware/tesla-dsp.xe64T "$stage/system/vendor/firmware/tesla-dsp.xe64T"
+    ln -sf /mnt/system/vendor/firmware/ducati-m3-core0.xem3 "$stage/lib/firmware/ducati-m3-core0.xem3"
+    ln -sf /mnt/system/vendor/firmware/ducati-m3-core0.xem3 "$stage/vendor/firmware/ducati-m3-core0.xem3"
+    ln -sf /mnt/system/vendor/firmware/ducati-m3-core0.xem3 "$stage/system/vendor/firmware/ducati-m3-core0.xem3"
 
     # Record build provenance inside the rootfs
     cat > "$stage/etc/glass-build-info" <<EOF
