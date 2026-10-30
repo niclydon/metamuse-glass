@@ -2,9 +2,9 @@
 
 **A new Linux operating system for Google Glass Explorer Edition (2014) that turns the glasses into a Meta Muse voice gadget** — no Android, no Google account, no Google services. The Glass pairs with the Muse phone app over Bluetooth LE, places realtime voice calls into a Muse chat, shows a live heads-up display on the prism, and answers through the bone-conduction speaker.
 
-The base system is called **Prism**. This overlay is **Vox**.
+The hardware itself is **Prism**, the device name this unit carries among its owner's other gadgets. This repo is its Muse gadget firmware.
 
-![The Vox HUD during a live voice call, captured from the Glass framebuffer](docs/screenshots/card-5-nova-voice-call.png)
+![The HUD during a live voice call, captured from the Glass framebuffer](docs/screenshots/card-5-nova-voice-call.png)
 
 ## Status: working on real hardware
 
@@ -25,7 +25,7 @@ The planning, the research synthesis, the build pipeline, and the code in this r
 
 ## How it works, in one paragraph
 
-Prism keeps Google's stock XE24 kernel — the bootloaders below it have no public source and are treated as fixed — and replaces everything above it: an Alpine armv7 userland, a framebuffer UI written in C, the BCM4330 driven with its stock firmware blobs, and Meta's Muse Gadget SDK Linux client (`musegadget`, Python) hand-installed for a non-systemd system. Because BlueZ's GATT stack would not serve pairing on the 3.4 kernel, Vox advertises with raw HCI commands and shims the L2CAP address-type handling the SDK expects. Voice runs WAV-first (PCM 24 kHz mono, exactly as the SDK wants it) through a small C bridge that speaks the old kernel's ALSA ioctl ABI and resamples to the codec's 48 kHz. Details: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
+Prism keeps Google's stock XE24 kernel — the bootloaders below it have no public source and are treated as fixed — and replaces everything above it: an Alpine armv7 userland, a framebuffer UI written in C, the BCM4330 driven with its stock firmware blobs, and Meta's Muse Gadget SDK Linux client (`musegadget`, Python) hand-installed for a non-systemd system. Because BlueZ's GATT stack would not serve pairing on the 3.4 kernel, the firmware advertises with raw HCI commands and shims the L2CAP address-type handling the SDK expects. Voice runs WAV-first (PCM 24 kHz mono, exactly as the SDK wants it) through a small C bridge that speaks the old kernel's ALSA ioctl ABI and resamples to the codec's 48 kHz. Details: [docs/HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md).
 
 ## Documentation
 

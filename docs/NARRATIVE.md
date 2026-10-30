@@ -26,4 +26,4 @@ It built the pipeline first, hardware-free, the way the contract asked. When the
 
 ## What it is, and is not
 
-Vox makes the glasses a voice endpoint for Meta's Muse. That is a cloud service, reached over the internet, and this repo says so plainly wherever it matters. The glasses also remain a complete little Linux machine that boots in under a minute and answers SSH; what else they become is, at last, a matter of local imagination rather than a product roadmap. The drawer is empty now. That was the point.
+The result makes the glasses a voice endpoint for Meta's Muse. That is a cloud service, reached over the internet, and this repo says so plainly wherever it matters. The glasses also remain a complete little Linux machine that boots in under a minute and answers SSH; what else they become is, at last, a matter of local imagination rather than a product roadmap. The drawer is empty now. That was the point.

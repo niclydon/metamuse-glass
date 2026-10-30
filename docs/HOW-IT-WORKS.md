@@ -1,6 +1,6 @@
 # How it works
 
-Prism (the base) and Vox (this overlay), layer by layer, with the three problems that actually decided whether the project lived.
+The stack, layer by layer, with the three problems that actually decided whether the project lived.
 
 ## The stack
 

@@ -11,8 +11,8 @@ Checked October 29–30, 2026, before and during the build. This page exists so 
 
 ## What this project adds, stated precisely
 
-- As of the October 2026 check, **no published work** had turned Google Glass into a voice endpoint for a modern AI assistant through a public gadget SDK with Bluetooth LE pairing to a phone app. Meta's Muse Gadget SDK opened publicly on October 2, 2026; its own guide ecosystem notes that nothing in it targets glasses. Vox is, to the best of a sourced search, the first published port of that SDK to Glass — phrased that way on purpose.
-- **No published operating system for Glass authored by an AI coding agent** was found. Vox's planning and code were created with Google's Gemini 4 Argon under a human-written brief and milestone contract, with a human directing, flashing, and testing on the hardware. That division of labor is the claim, and the repo's docs (the brief-driven milestones, the builder's results log) are its evidence.
+- As of the October 2026 check, **no published work** had turned Google Glass into a voice endpoint for a modern AI assistant through a public gadget SDK with Bluetooth LE pairing to a phone app. Meta's Muse Gadget SDK opened publicly on October 2, 2026; its own guide ecosystem notes that nothing in it targets glasses. This firmware is, to the best of a sourced search, the first published port of that SDK to Glass — phrased that way on purpose.
+- **No published operating system for Glass authored by an AI coding agent** was found. Its planning and code were created with Google's Gemini 4 Argon under a human-written brief and milestone contract, with a human directing, flashing, and testing on the hardware. That division of labor is the claim, and the repo's docs (the brief-driven milestones, the builder's results log) are its evidence.
 
 ## Standing on
 
