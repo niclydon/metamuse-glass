@@ -1,5 +1,12 @@
 # metamuse-glass changes
 
+## 1.2.0 — 2026-10-30 — Sync to the 23-tool build (firmware 0.2.3)
+
+- The `glass-mcp` server grows from 19 to 23 tools: `glass_settings`, `glass_sensors`, `glass_speak`, and `glass_wifi_heal`, backed by four new `glass-agentd` endpoints (`/settings`, `/sensors`, `/speak`, `/wifi/heal`). The firmware version label is unchanged (0.2.3); this sync brings the public tree to the current shipped build.
+- Wi-Fi self-heal: a `glass-wifi heal` subcommand resets the BCM4330 SDIO bus when the radio hangs (traced to a `dhd_check_hang` after camera captures), the `rcS` watchdog now verifies gateway reachability instead of trusting the interface address, and the camera path heals automatically after a shot when the network is unreachable.
+- Scrub discipline maintained on the delta: the new code arrived with the author's LAN gateway as a hardcoded fallback in three places; in this tree the gateway is derived from the route table at runtime (overridable via `GLASS_GATEWAY`) and no network addresses, identifiers, or pairing material are baked in.
+- Docs: README, HOW-IT-WORKS, NARRATIVE, and MILESTONES updated to the 23-tool set; RESULTS gains the session record for the new tools and the SDIO auto-heal. The dock narrative chapter remains unpublished: it documents the second system's dock daemon, which is not part of this repo.
+
 ## 1.1.0 — 2026-10-30 — Launch polish: sync to firmware 0.2.3
 
 - Code synced to the shipped firmware 0.2.3 state: camera-to-chat as shipped, the `glass-agentd` control plane, the 19-tool `glass-mcp` server (`mcp/`), `glass-camera-record`, the stage-2 dual-boot chooser (`etc/glass/hud`), keys-only SSH (`etc/glass/sshd`), realtime streaming voice, the on-device settings card, and the thermal and untethered-boot work. New narrative chapters under docs/narrative/ carry the session record, and docs/RESULTS.md is extended through the 0.2.x sessions.

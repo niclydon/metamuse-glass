@@ -322,6 +322,64 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "glass_settings",
+        "description": "Read or update on-device Google Glass settings (volume_pct 10-100, brightness 1-255, audio_route bone/earbud, sleep_timeout_sec 0=never or 5-3600s) and persist them to /var/lib/musegadget/.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "volume_pct": {
+                    "type": "integer",
+                    "description": "Optional playback/chime volume percentage (10 to 100).",
+                },
+                "brightness": {
+                    "type": "integer",
+                    "description": "Optional LCoS prism backlight brightness (1 to 255).",
+                },
+                "audio_route": {
+                    "type": "string",
+                    "enum": ["bone", "earbud", "usb", "auto"],
+                    "description": "Optional audio route (`bone` for bone-conduction transducer, `earbud` for micro-USB earbud).",
+                },
+                "sleep_timeout_sec": {
+                    "type": "integer",
+                    "description": "Optional off-head desk auto-sleep timeout in seconds (`0` = never sleep, `15` = 15s default).",
+                },
+            },
+        },
+    },
+    {
+        "name": "glass_sensors",
+        "description": "Read live physical wearable sensors from Google Glass: inward-facing IR proximity & don/doff head detector (`glasshub` 4-0035: `on_head`, `proxraw`, `ambient_visible`, `ambient_ir`, `wink`), 9-axis IMU die temperature (`mpu9150`), PCB/battery thermals, and BQ27520 coulomb counter (`voltage_mv`, `current_ma`, `capacity_pct`).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "glass_speak",
+        "description": "Have Chibi Nova speak an exact text message aloud on Google Glass over the bone-conduction transducer / earbud via realtime VoiceCall TTS with live 24 fps Chibi lip-sync and prism HUD text.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": {
+                    "type": "string",
+                    "description": "Exact message for Chibi Nova to speak aloud on the Glasses.",
+                },
+            },
+            "required": ["text"],
+        },
+    },
+    {
+        "name": "glass_wifi_heal",
+        "description": "Check Google Glass Wi-Fi (`wlan0` SSID, signal dBm, gateway ping) and USB dock (`rndis0`) connectivity, and automatically reset the Broadcom BCM4330 SDIO bus (`glass-wifi down && glass-wifi up`) if `dhd_check_hang` or packet loss is detected (or if `force=true`).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "force": {
+                    "type": "boolean",
+                    "description": "Force a BCM4330 SDIO reset even if the gateway ping succeeds (default false).",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -551,6 +609,16 @@ def handle_call(name: str, args: dict) -> dict:
             api_post("/os/switch", {"target": next_os, "persist": True})
         api_post("/exec", {"command": "nohup /bin/sh -c 'sync; sleep 0.3; /sbin/reboot -f' >/dev/null 2>&1 </dev/null &"})
         return {"ok": True, "rebooting": True, "next_os": next_os or "default"}
+    if name == "glass_settings":
+        if not args:
+            return json.loads(api_get("/settings").decode("utf-8"))
+        return api_post("/settings", args)
+    if name == "glass_sensors":
+        return json.loads(api_get("/sensors").decode("utf-8"))
+    if name == "glass_speak":
+        return api_post("/speak", {"text": args["text"]}, timeout=40.0)
+    if name == "glass_wifi_heal":
+        return api_post("/wifi/heal", {"force": bool(args.get("force", False))}, timeout=15.0)
     raise ValueError(f"Unknown tool: {name}")
 
 

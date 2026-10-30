@@ -55,8 +55,8 @@ bring_radio_up() {
 
 start_supplicant() {
     ensure_conf
-    [ -S /run/wpa_supplicant/wlan0 ] && return 0
     bring_radio_up
+    [ -S /run/wpa_supplicant/wlan0 ] && return 0
     # WEXT is compiled out in notle_defconfig; explicitly use nl80211.
     setsid wpa_supplicant -Dnl80211 -i wlan0 -c "$CONF" >> /var/log/wpa_supplicant.log 2>&1 </dev/null &
     echo $! > /run/wpa_supplicant.pid
@@ -109,14 +109,16 @@ case "${1:-}" in
             udhcpc -b -i wlan0 -p /run/udhcpc.wlan0.pid -x hostname:glass-muse -t 5 -T 3 >/dev/null 2>&1 || true
         fi
         sed -i '/^-n$/d' /etc/resolv.conf 2>/dev/null || true
+        grep -q '1.1.1.1' /etc/resolv.conf 2>/dev/null || echo 'nameserver 1.1.1.1' >> /etc/resolv.conf
+        grep -q '8.8.8.8' /etc/resolv.conf 2>/dev/null || echo 'nameserver 8.8.8.8' >> /etc/resolv.conf
         # Sync system clock via NTP synchronously first so modern TLS certs validate immediately
-        if ntpd -n -q -p pool.ntp.org >/dev/null 2>&1; then
+        if ntpd -n -q -p 162.159.200.1 -p pool.ntp.org >/dev/null 2>&1; then
             touch /run/glass/clock-ok
         else
             (
                 j=0
                 while [ $j -lt 6 ]; do
-                    if ntpd -n -q -p pool.ntp.org >/dev/null 2>&1; then
+                    if ntpd -n -q -p 162.159.200.1 -p pool.ntp.org >/dev/null 2>&1; then
                         touch /run/glass/clock-ok
                         exit 0
                     fi
@@ -126,6 +128,19 @@ case "${1:-}" in
             ) >/dev/null 2>&1 &
         fi
         "$0" status
+        ;;
+    heal)
+        gw=$(ip route show dev wlan0 2>/dev/null | awk '/^default/ {print $3; exit}')
+        [ -n "$gw" ] || gw="${GLASS_GATEWAY:-1.1.1.1}"
+        if ! ip -4 addr show wlan0 2>/dev/null | grep -q "inet " ||
+           ! ping -I wlan0 -c 1 -W 2 "$gw" >/dev/null 2>&1; then
+            echo "glass-wifi: wlan0 unreachable (gw $gw); resetting BCM4330 SDIO bus..."
+            "$0" down || true
+            sleep 1
+            "$0" up || true
+        else
+            echo "glass-wifi: wlan0 healthy (gw $gw reachable)"
+        fi
         ;;
     down)
         [ -f /run/udhcpc.wlan0.pid ] && kill "$(cat /run/udhcpc.wlan0.pid)" 2>/dev/null || true

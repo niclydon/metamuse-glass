@@ -143,9 +143,14 @@ if [ -x /usr/sbin/glass-wifi ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ]
         fi
         while true; do
             sleep 15
-            if ! ip -4 addr show wlan0 2>/dev/null | grep -q "inet "; then
-                echo on > /sys/power/state 2>/dev/null || true
-                /usr/sbin/glass-wifi up >> /run/glass/rcS.log 2>&1 || true
+            gw=$(ip route show dev wlan0 2>/dev/null | awk "/^default/ {print \$3; exit}")
+            [ -n "$gw" ] || gw="${GLASS_GATEWAY:-1.1.1.1}"
+            if ! ip -4 addr show wlan0 2>/dev/null | grep -q "inet " ||
+               ! ping -I wlan0 -c 1 -W 2 "$gw" >/dev/null 2>&1; then
+                if ! ping -I wlan0 -c 1 -W 2 "$gw" >/dev/null 2>&1; then
+                    echo on > /sys/power/state 2>/dev/null || true
+                    /usr/sbin/glass-wifi heal >> /run/glass/rcS.log 2>&1 || true
+                fi
             fi
         done
     ' >/dev/null 2>&1 </dev/null &

@@ -149,6 +149,71 @@ def get_status() -> dict:
     }
 
 
+def get_settings() -> dict:
+    vol = read_text("/run/glass/volume", read_text("/var/lib/musegadget/volume", "100"))
+    bri = read_text("/sys/class/backlight/notle_bl/brightness",
+                    read_text("/sys/devices/platform/omapdss/manager2/panel-notle-dpi/brightness", "120"))
+    route = read_text("/run/glass/audio-route", "bone")
+    tmo = read_text("/run/glass/sleep-timeout-sec", read_text("/var/lib/musegadget/sleep-timeout-sec", "15"))
+    return {
+        "ok": True,
+        "volume_pct": int(vol) if vol.isdigit() else 100,
+        "brightness": int(bri) if bri.isdigit() else 120,
+        "audio_route": route or "bone",
+        "sleep_timeout_sec": int(tmo) if tmo.isdigit() else 15,
+    }
+
+
+def get_sensors() -> dict:
+    try:
+        write_text("/sys/bus/i2c/devices/4-0035/don_doff_enable", "1\n")
+        write_text("/sys/bus/i2c/devices/4-0035/ambient_enable", "1\n")
+        write_text("/sys/bus/iio/devices/iio:device0/power_state", "1\n")
+    except Exception:
+        pass
+    don = read_text("/sys/bus/i2c/devices/4-0035/don_doff", "0")
+    prox = read_text("/sys/bus/i2c/devices/4-0035/proxraw", "65535")
+    vis = read_text("/sys/bus/i2c/devices/4-0035/visible", "0")
+    ir_val = read_text("/sys/bus/i2c/devices/4-0035/ir", "0")
+    wink = read_text("/sys/bus/i2c/devices/4-0035/wink", "0")
+    gh_ver = read_text("/sys/bus/i2c/devices/4-0035/version", "unknown")
+    mpu_t = read_text("/sys/bus/iio/devices/iio:device0/temperature", "0").split()[0]
+    mpu_temp_c = round(int(mpu_t) / 65536.0, 2) if mpu_t.lstrip("-").isdigit() else 0.0
+    cur_ua = read_text("/sys/class/power_supply/bq27520-0/current_now", "0")
+    bat_temp_dc = read_text("/sys/class/power_supply/bq27520-0/temp", "0")
+    pcb_temp_mc = read_text("/sys/devices/platform/notle_pcb_sensor.0/temperature", "0")
+    cap = read_text("/sys/class/power_supply/bq27520-0/capacity", "-1")
+    volt_uv = read_text("/sys/class/power_supply/bq27520-0/voltage_now", "0")
+    return {
+        "ok": True,
+        "glasshub": {
+            "on_head": don == "1",
+            "don_doff_raw": int(don) if don.isdigit() else 0,
+            "proxraw": int(prox) if prox.isdigit() else 65535,
+            "ambient_visible": int(vis) if vis.isdigit() else 0,
+            "ambient_ir": int(ir_val) if ir_val.isdigit() else 0,
+            "wink": int(wink) if wink.isdigit() else 0,
+            "firmware_version": gh_ver,
+        },
+        "imu_mpu9150": {
+            "die_temp_c": mpu_temp_c,
+            "power_state": int(read_text("/sys/bus/iio/devices/iio:device0/power_state", "0") or "0"),
+        },
+        "thermals_c": {
+            "pcb_temp_c": round(int(pcb_temp_mc) / 1000.0, 1) if pcb_temp_mc.lstrip("-").isdigit() else 0.0,
+            "battery_temp_c": round(int(bat_temp_dc) / 10.0, 1) if bat_temp_dc.lstrip("-").isdigit() else 0.0,
+            "imu_temp_c": mpu_temp_c,
+        },
+        "battery": {
+            "capacity_pct": int(cap) if cap.lstrip("-").isdigit() else -1,
+            "voltage_mv": int(volt_uv) // 1000 if volt_uv.isdigit() else 0,
+            "current_ma": int(cur_ua) // 1000 if cur_ua.lstrip("-").isdigit() else 0,
+            "status": read_text("/sys/class/power_supply/bq27520-0/status", "Unknown"),
+            "usb_online": read_text("/sys/class/power_supply/twl6030_usb/online", "0") == "1",
+        },
+    }
+
+
 def get_health_audit() -> dict:
     st = get_status()
     cur_ua = read_text("/sys/class/power_supply/bq27520-0/current_now", "0")
@@ -315,6 +380,12 @@ tickImg();
             return
         if path == "/health-audit":
             self._send_json(get_health_audit())
+            return
+        if path == "/settings":
+            self._send_json(get_settings())
+            return
+        if path == "/sensors":
+            self._send_json(get_sensors())
             return
         if path == "/download":
             qs = parse_qs(parsed.query)
@@ -638,6 +709,145 @@ print(json.dumps({"ok": True, "thread_id": tid, "message_id": msg_id, "reply_tex
                     "rebooting": reboot_after,
                 })
                 return
+
+        if path == "/settings":
+            if "volume_pct" in body and body["volume_pct"] is not None:
+                v = max(10, min(100, int(body["volume_pct"])))
+                write_text("/run/glass/volume", f"{v}\n")
+                write_text("/var/lib/musegadget/volume", f"{v}\n")
+            if "brightness" in body and body["brightness"] is not None:
+                b = max(1, min(255, int(body["brightness"])))
+                for p in (
+                    "/sys/class/backlight/notle_bl/brightness",
+                    "/sys/devices/platform/omapdss/manager2/panel-notle-dpi/brightness",
+                    "/var/lib/musegadget/brightness",
+                ):
+                    try:
+                        write_text(p, f"{b}\n")
+                    except Exception:
+                        pass
+            if "audio_route" in body and body["audio_route"]:
+                mode = str(body["audio_route"]).strip().lower()
+                if mode in ("bone", "earbud", "usb", "auto"):
+                    subprocess.run(["/usr/sbin/glass-audio-route", mode], capture_output=True)
+            if "sleep_timeout_sec" in body and body["sleep_timeout_sec"] is not None:
+                tmo = max(0, min(3600, int(body["sleep_timeout_sec"])))
+                write_text("/run/glass/sleep-timeout-sec", f"{tmo}\n")
+                write_text("/var/lib/musegadget/sleep-timeout-sec", f"{tmo}\n")
+            write_text("/run/glass/wake", "1\n")
+            self._send_json(get_settings())
+            return
+
+        if path == "/speak":
+            text = str(body.get("text", "")).strip()
+            if not text:
+                self._send_json({"ok": False, "error": "empty text"}, 400)
+                return
+            write_text("/run/glass/wake", "1\n")
+            py_speak = """
+import json, subprocess, sys, time
+from pathlib import Path
+from musegadget.credentials import load_pairing, load_sdk_token
+from musegadget.link_client import LinkClient
+from musegadget.link_session import LinkSession
+from musegadget.voice import VoiceCall
+
+text = sys.argv[1]
+open("/run/glass/nova-state", "w").write("SPEAKING\\n")
+open("/run/glass/nova-reply", "w").write(text[:180] + "\\n")
+subprocess.run(["/usr/sbin/glass-audio-route", "bone"], capture_output=True)
+
+data_dir = Path("/var/lib/musegadget")
+pairing = load_pairing(data_dir)
+sdk_token = load_sdk_token(data_dir)
+client = LinkClient(sdk_token=sdk_token)
+vms = client.fetch_vms_with_status(pairing.access_token)
+vm = vms[0]
+sess = LinkSession(vm=vm, access_token=pairing.access_token)
+
+class PlayOnlyAudio:
+    def __init__(self):
+        self.proc = None
+    def start_input(self, cb):
+        pass
+    def stop_input(self):
+        pass
+    def start_output(self):
+        self.proc = subprocess.Popen(["/usr/bin/glass-wav", "stream-play"], stdin=subprocess.PIPE)
+    def write_output(self, pcm):
+        if self.proc and self.proc.stdin:
+            try:
+                self.proc.stdin.write(pcm)
+                self.proc.stdin.flush()
+            except Exception:
+                pass
+    def clear_output(self):
+        pass
+    def stop_output(self):
+        if self.proc:
+            try:
+                if self.proc.stdin:
+                    self.proc.stdin.close()
+                self.proc.wait(timeout=15)
+            except Exception:
+                self.proc.kill()
+            self.proc = None
+
+audio = PlayOnlyAudio()
+call = VoiceCall(session=sess, audio=audio, instructions="Read the user message verbatim aloud with natural warmth. Do not add extra words.", max_duration=25.0)
+orig_confirm = call._confirm
+def speak_confirm():
+    orig_confirm()
+    sess.client.write_json({
+        "type": "conversation.item.create",
+        "item": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": f"Say verbatim: {text}"}]},
+    })
+    sess.client.write_json({"type": "response.create"})
+call._confirm = speak_confirm
+
+orig_read = sess.client.read_ndjson
+def stop_on_done():
+    for ev in orig_read():
+        if isinstance(ev, dict) and ev.get("type") in ("response.done", "error"):
+            yield ev
+            call._stop.set()
+            return
+        yield ev
+sess.client.read_ndjson = stop_on_done
+call.run()
+open("/run/glass/nova-state", "w").write("READY\\n")
+open("/run/glass/nova-rms", "w").write("0\\n")
+print(json.dumps({"ok": True, "spoken_text": text}))
+"""
+            res = subprocess.run(["/usr/bin/python3", "-c", py_speak, text], capture_output=True, text=True, timeout=35)
+            try:
+                out = json.loads((res.stdout.strip().splitlines() or ["{}"])[-1])
+            except Exception:
+                out = {"ok": False, "stdout": res.stdout, "stderr": res.stderr}
+            self._send_json(out)
+            return
+
+        if path == "/wifi/heal":
+            force = bool(body.get("force", False))
+            iw_out = subprocess.run(["/bin/sh", "-c", "iw dev wlan0 link 2>/dev/null || true"], capture_output=True, text=True).stdout.strip()
+            wpa_out = subprocess.run(["/bin/sh", "-c", "wpa_cli -p /run/wpa_supplicant -i wlan0 status 2>/dev/null || true"], capture_output=True, text=True).stdout.strip()
+            gw_cmd = "gw=$(ip route show dev wlan0 2>/dev/null | awk '/^default/ {print $3; exit}'); ping -I wlan0 -c 1 -W 2 ${gw:-1.1.1.1} >/dev/null 2>&1"
+            gw_ok = subprocess.run(["/bin/sh", "-c", gw_cmd], capture_output=True).returncode == 0
+            usb_cmd = "gw=$(ip route show dev rndis0 2>/dev/null | awk '/^default/ {print $3; exit}'); [ -n \"$gw\" ] && ping -I rndis0 -c 1 -W 1 \"$gw\" >/dev/null 2>&1"
+            usb_ok = subprocess.run(["/bin/sh", "-c", usb_cmd], capture_output=True).returncode == 0
+            healed = False
+            if force or not gw_ok:
+                subprocess.Popen(["/bin/sh", "-c", "sleep 0.2; /usr/sbin/glass-wifi heal >/var/log/glass-wifi-heal.log 2>&1"])
+                healed = True
+            self._send_json({
+                "ok": True,
+                "wlan0_gateway_ping_ok": gw_ok,
+                "usb_dock_ping_ok": usb_ok,
+                "heal_triggered": healed,
+                "iw_link": iw_out,
+                "wpa_status": wpa_out,
+            })
+            return
 
         if path == "/exec":
             cmd_str = str(body.get("command", "")).strip()

@@ -41,3 +41,7 @@ A second, local system co-resides on the same hardware layer behind a stage-2 ch
 ### Realtime voice and the settings card (0.2.3)
 
 Voice went fully realtime: microphone and reply stream simultaneously (`POST /voice/realtime`), with transcripts rendering on the prism word by word. The glasses also gained their own settings card — volume, brightness, audio output, desk sleep, and the OS switch from the temple touchpad, with the physical back button as its shortcut — and a camera/USB-mux fix so shooting a photo while docked no longer drops the USB data lines.
+
+### Sensors, the settings API, and self-healing Wi-Fi (0.2.3)
+
+Four more tools take the MCP server to 23: `glass_settings` (read/write the on-device settings the settings card drives), `glass_sensors` (the glasshub head-detector and light sensors, IMU die temperature, board and battery thermals, and the fuel gauge), `glass_speak` (verbatim text spoken on the glasses with live lip-sync), and `glass_wifi_heal`. The heal exists because of a found bug: after a camera capture, the Wi-Fi chip's SDIO bus could hang (`dhd_check_hang` in the kernel log) while the interface kept its address, so nothing looked wrong. `glass-wifi heal` resets the bus, the boot watchdog now proves gateway reachability instead of trusting the address, and the camera path heals automatically after a shot if the network is unreachable. All 23 tools verified live on the device.
