@@ -1,0 +1,68 @@
+#!/bin/sh
+# rcS: system initialization for Glass OS (Muse Gadget Overlay).
+#   1. Brings up loopback and USB RNDIS network gadget (172.16.42.1/24 + DHCP).
+#   2. Initializes the Himax HX7309 640x360 LCoS prism (0 -> 1 reset sequence
+#      on panel-notle-dpi/enabled so the stock 3.4.94 driver turns the LED on).
+#   3. Runs fb-hello --once to draw the initial test pattern and record
+#      framebuffer / DISPC diagnostics to ttyO2 and /run/glass/rcS.log.
+#   4. If Wi-Fi credentials are present in /etc/wpa_supplicant/wpa_supplicant.conf,
+#      brings up wlan0 (BCM4330 via bcmdhd + nl80211).
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mkdir -p /run/glass /var/lib/misc /etc/dropbear /var/log
+
+log() {
+    msg="glass-os-rcS: $*"
+    [ -c /dev/kmsg ] && echo "$msg" > /dev/kmsg 2>/dev/null || true
+    [ -c /dev/ttyO2 ] && echo "$msg" > /dev/ttyO2 2>/dev/null || true
+    echo "$(date +%T 2>/dev/null || echo 00:00:00) $msg" >> /run/glass/rcS.log
+}
+
+ip link set lo up
+
+# 1. USB RNDIS network lifeline (172.16.42.1/24; host gets 172.16.42.2 via udhcpd)
+if ifname=$(/usr/sbin/glass-gadget 2>>/run/glass/rcS.log); then
+    log "USB RNDIS gadget active on $ifname (172.16.42.1/24)"
+    ip addr add 172.16.42.1/24 dev "$ifname" 2>/dev/null || true
+    ip link set "$ifname" up
+    sed "s/@IF@/$ifname/" /etc/glass/udhcpd.conf.in > /run/glass/udhcpd.conf
+    if command -v udhcpd >/dev/null 2>&1; then
+        udhcpd /run/glass/udhcpd.conf
+    elif command -v busybox-extras >/dev/null 2>&1; then
+        busybox-extras udhcpd /run/glass/udhcpd.conf
+    fi
+    # Start a point-to-point USB RNDIS backup root shell on 172.16.42.1:23 alongside Dropbear SSH
+    if [ -x /bin/busybox-extras ]; then
+        /bin/busybox-extras telnetd -l /bin/sh -b 172.16.42.1:23 2>/dev/null || true
+    fi
+else
+    log "USB gadget setup returned non-zero; continuing with ttyO2 serial and display"
+fi
+
+# 2. Himax HX7309 640x360 LCoS prism display bring-up on stock 3.4.94 kernel
+p=/sys/devices/platform/omapdss/manager2/panel-notle-dpi
+if [ -d "$p" ]; then
+    log "resetting panel-notle-dpi (0 -> 1) to enable LCoS LED illumination"
+    echo 0 > "$p/enabled"
+    sleep 1
+    echo 1 > "$p/enabled"
+    echo "${GLASS_BRIGHTNESS:-120}" > "$p/brightness"
+    echo 0 > /sys/devices/platform/omapfb/graphics/fb0/blank
+    echo "U:640x360p-312" > /sys/devices/platform/omapfb/graphics/fb0/mode
+    log "panel-notle-dpi enabled (brightness $(cat "$p/brightness" 2>/dev/null || echo '?'))"
+fi
+
+# 3. Run one-shot framebuffer test pattern + DISPC latch and log output
+if [ -x /usr/bin/fb-hello ]; then
+    fb_out=$(/usr/bin/fb-hello --once --no-panel-reset 2>&1 || true)
+    log "$fb_out"
+fi
+
+# 4. Optional Wi-Fi auto-join if a network block is already configured (M2+)
+if [ -x /usr/sbin/glass-wifi ] && [ -f /etc/wpa_supplicant/wpa_supplicant.conf ] &&
+   grep -q 'network=' /etc/wpa_supplicant/wpa_supplicant.conf 2>/dev/null; then
+    log "stored Wi-Fi configuration found; starting glass-wifi up"
+    /usr/sbin/glass-wifi up >> /run/glass/rcS.log 2>&1 &
+fi
+
+log "M0 boot complete: kernel $(uname -r), ssh root@172.16.42.1, serial ttyO2 115200n8"
+exit 0

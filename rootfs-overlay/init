@@ -1,0 +1,129 @@
+#!/bin/sh
+# /init for the Glass OS (Muse Gadget Overlay) initramfs.
+# Runs on Google's stock XE24 kernel (3.4.94, board "notle" / glass_1).
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+
+# Stock XE24 3.4.94 kernel does not enable CONFIG_DEVTMPFS; mount a tmpfs on
+# /dev so device nodes can be created by busybox mdev and moved on switch_root.
+if ! mount -t devtmpfs devtmpfs /dev 2>/dev/null; then
+    mount -t tmpfs -o mode=0755 tmpfs /dev
+    echo /sbin/mdev > /proc/sys/kernel/hotplug
+    mdev -s
+fi
+
+mkdir -p /dev/pts /dev/shm /run /tmp /run/glass /sys/kernel/debug
+mount -t devpts devpts /dev/pts
+mount -t tmpfs -o mode=0755 tmpfs /run
+mount -t tmpfs tmpfs /tmp
+mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+mkdir -p /run/glass
+
+log() {
+    msg="glass-os-init: $*"
+    [ -c /dev/kmsg ] && echo "$msg" > /dev/kmsg 2>/dev/null || true
+    [ -c /dev/ttyO2 ] && echo "$msg" > /dev/ttyO2 2>/dev/null || true
+    echo "$(date +%T 2>/dev/null || echo 00:00:00) $msg" >> /run/glass/init.log
+}
+
+hostname glass-muse
+kver=$(uname -r)
+mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+cmdline=$(cat /proc/cmdline 2>/dev/null || echo "")
+
+log "M0 init starting on kernel $kver (MemTotal=${mem_kb}kB)"
+log "cmdline: $cmdline"
+
+# Check if we should stay in the initramfs (default for M0/M1 RAM boot) or
+# switch_root to an ext4 rootfs on userdata (used in M2/M3/M4 when populated).
+stay=0
+case " $cmdline " in *" glass.stay "*) stay=1 ;; esac
+[ -f /etc/glass-stay ] && stay=1
+
+userdata_part() {
+    for u in /sys/class/block/*/uevent; do
+        grep -qx 'PARTNAME=userdata' "$u" 2>/dev/null || continue
+        d=${u%/uevent}
+        echo "/dev/${d##*/}"
+        return 0
+    done
+    return 1
+}
+
+if [ "$stay" = 0 ]; then
+    dev=""
+    i=0
+    while [ $i -lt 6 ]; do
+        dev=$(userdata_part) && break
+        sleep 1
+        i=$((i + 1))
+    done
+    if [ -n "$dev" ]; then
+        mkdir -p /newroot
+        if mount -t ext4 -o ro,noload "$dev" /newroot 2>/dev/null; then
+            if [ -f /newroot/etc/glass-muse-rootfs ] && [ -x /newroot/sbin/init ]; then
+                umount /newroot
+                if mount -t ext4 -o rw "$dev" /newroot; then
+                    log "switching root to $dev (/etc/glass-muse-rootfs)"
+                    umount /tmp 2>/dev/null || true
+                    for m in /dev /run /proc /sys; do
+                        mkdir -p "/newroot$m"
+                        mount --move "$m" "/newroot$m"
+                    done
+                    exec switch_root /newroot /sbin/init
+                fi
+            fi
+            umount /newroot 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Unpack xz-compressed OpenSSL libraries for BusyBox wget TLS + modern CA store
+if [ -f /usr/lib/openssl.tar.xz ]; then
+    /bin/busybox tar -xJf /usr/lib/openssl.tar.xz -C / 2>/dev/null || true
+    rm -f /usr/lib/openssl.tar.xz
+fi
+if [ -f /usr/share/glass/nova_sprites.bin.xz ]; then
+    /bin/busybox unxz -c /usr/share/glass/nova_sprites.bin.xz > /run/glass/nova_sprites.bin 2>/dev/null || true
+    rm -f /usr/share/glass/nova_sprites.bin.xz
+fi
+
+# Mount stock /system read-only at /mnt/system so stock wpa_supplicant,
+# ducati-m3-core0.xem3 (5MP camera OMX coprocessor), and tesla-dsp.xe64T
+# are reachable during RAM-only fastboot boot without flash writes
+for u in /sys/class/block/*/uevent; do
+    grep -qx 'PARTNAME=system' "$u" 2>/dev/null || continue
+    sys_dev="/dev/${u%/uevent}"
+    sys_dev="/dev/${sys_dev##*/}"
+    mkdir -p /mnt/system /lib/firmware
+    if mount -t ext4 -o ro "$sys_dev" /mnt/system 2>/dev/null; then
+        [ -d /mnt/system/bin ] && [ ! -e /system/bin ] && ln -sf /mnt/system/bin /system/bin
+        [ -d /mnt/system/lib ] && [ ! -e /system/lib ] && ln -sf /mnt/system/lib /system/lib
+        [ -x /mnt/system/bin/wpa_supplicant ] && [ ! -e /sbin/wpa_supplicant ] && ln -sf /mnt/system/bin/wpa_supplicant /sbin/wpa_supplicant
+        for fw in ducati-m3-core0.xem3 ducati-m3-core0-2gb.xem3 tesla-dsp.xe64T; do
+            [ -f "/mnt/system/vendor/firmware/$fw" ] && ln -sf "/mnt/system/vendor/firmware/$fw" "/lib/firmware/$fw"
+        done
+        (
+            i=0
+            while [ $i -lt 60 ]; do
+                for d in /sys/class/firmware/*/; do
+                    [ -f "${d}loading" ] || continue
+                    fw_name=$(sed -n 's/^FIRMWARE=//p' "${d}uevent" 2>/dev/null)
+                    if [ -n "$fw_name" ] && [ -f "/lib/firmware/$fw_name" ]; then
+                        echo 1 > "${d}loading" 2>/dev/null || true
+                        cat "/lib/firmware/$fw_name" > "${d}data" 2>/dev/null || true
+                        echo 0 > "${d}loading" 2>/dev/null || true
+                    fi
+                done
+                sleep 1
+                i=$((i + 1))
+            done
+        ) &
+    fi
+    break
+done
+
+log "staying in initramfs; handing over to /sbin/init"
+exec /sbin/init

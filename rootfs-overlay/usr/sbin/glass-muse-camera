@@ -1,0 +1,176 @@
+#!/bin/sh
+# glass-muse-camera: Snap a 640x360 photo from the Google Glass 5MP OV5680 camera
+# (via OMAP4 Ducati M3 glass-camera), display it on the prism HUD alongside Chibi Nova,
+# send it to the Meta Muse (Nova) chat, and play Nova's spoken reply with lip-sync.
+
+set -eu
+
+CAPTURE_ONLY=0
+PROMPT_MSG="I just snapped this photo with my Google Glass camera. Tell me what you see in 1 or 2 short sentences."
+if [ "${1:-}" = "--capture-only" ]; then
+    CAPTURE_ONLY=1
+    shift
+elif [ $# -gt 0 ]; then
+    PROMPT_MSG="$*"
+fi
+
+mkdir -p /run/glass /var/lib/musegadget/photos
+
+LOCK_FILE="/run/glass/camera.lock"
+if [ -f "$LOCK_FILE" ]; then
+    old_pid=$(cat "$LOCK_FILE" 2>/dev/null || true)
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+        echo "glass-muse-camera: capture already in progress (PID $old_pid)"
+        exit 0
+    fi
+fi
+echo "$$" > "$LOCK_FILE"
+trap 'rm -f "$LOCK_FILE"' EXIT INT TERM
+
+/usr/sbin/glass-audio-route >/dev/null 2>&1 || true
+
+if [ "$CAPTURE_ONLY" = "0" ]; then
+    echo "THINKING" > /run/glass/nova-state
+    echo "THINKING" > /run/glass/voice-state
+    echo "[CAMERA PHOTO]" > /run/glass/nova-user
+    echo "SNAPPING 5MP CAMERA..." > /run/glass/nova-reply
+    /usr/bin/glass-wav chime start >/dev/null 2>&1 || true
+fi
+
+export LD_LIBRARY_PATH=/usr/lib:/lib:/mnt/system/vendor/lib:/mnt/system/lib
+rm -f /tmp/snap.nv12 /tmp/snap.scanlines
+
+# Capture 6 frames (0.2s) at 640x360 NV12 so OV5680 auto-exposure/AWB settles
+if [ -c /dev/rpmsg-omx1 ] && [ -x /usr/bin/glass-camera ]; then
+    /usr/bin/glass-camera -y -w 640 -h 360 -n 6 > /tmp/snap.nv12 2>/run/glass/glass-camera.err || true
+fi
+
+NV12_SZ=$(wc -c < /tmp/snap.nv12 2>/dev/null || echo 0)
+if [ "$NV12_SZ" -ge 345600 ]; then
+    /usr/bin/glass-wav nv12-conv /tmp/snap.nv12 640 360 /run/glass/camera-frame.bgra /tmp/snap.scanlines
+    python3 -c '
+import zlib, struct, shutil, time
+raw = open("/tmp/snap.scanlines", "rb").read()
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 640, 360, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b"")
+open("/tmp/glass-photo.png", "wb").write(png)
+shutil.copyfile("/tmp/glass-photo.png", f"/var/lib/musegadget/photos/photo-{int(time.time())}.png")
+'
+    echo "1" > /run/glass/camera-active
+else
+    if [ "$CAPTURE_ONLY" = "1" ]; then
+        echo "glass-muse-camera: /dev/rpmsg-omx1 camera capture failed (size=$NV12_SZ)" >&2
+        exit 1
+    fi
+    echo "READY" > /run/glass/nova-state
+    echo "CAMERA FIRMWARE NOT LOADED" > /run/glass/nova-reply
+    exit 1
+fi
+
+if [ "$CAPTURE_ONLY" = "1" ]; then
+    echo "/tmp/glass-photo.png"
+    exit 0
+fi
+
+echo "SENDING PHOTO TO NOVA..." > /run/glass/nova-reply
+/usr/bin/glass-wav chime think >/dev/null 2>&1 || true
+
+THREAD_ID=""
+if [ -f /run/glass/voice.env ]; then
+    . /run/glass/voice.env || true
+fi
+export THREAD_ID PROMPT_MSG
+
+python3 - <<'PYEOF'
+import asyncio, base64, os
+from musegadget import config, muse_api
+from musegadget.identity import load_or_create
+from musegadget.link_client import DeviceDescription, LinkSession, acknowledgement
+from musegadget.muse_turn import MuseTurn, Reply
+
+def write_file(path, text):
+    try:
+        with open(path, "w") as f:
+            f.write(text)
+    except Exception:
+        pass
+
+async def main():
+    pairing = config.load_json(config.PAIRING_FILE)
+    ident = load_or_create()
+    api = muse_api.api_root(pairing.get("api_url_v2", ""))
+    vms, _ = muse_api.fetch_vms_with_status(pairing["access_token"], api)
+    vm = next((v for v in vms if v["is_default"]), vms[0])
+    sess = LinkSession(
+        noise_host=pairing.get("noise_host") or "hatch.metaaivm.com",
+        vm_id=vm["vm_id"] or vm["vm_name"],
+        vm_auth_token=vm["vm_auth_token"],
+        device=DeviceDescription(ident.node_id, "glass", "0.1.5", {}),
+        run_command=lambda *a: {"ok": True},
+        register_device=False,
+    )
+    stop = asyncio.Event()
+    task = asyncio.create_task(sess.run(stop))
+    await sess.wait_transport_ready()
+
+    png_b64 = base64.b64encode(open("/tmp/glass-photo.png", "rb").read()).decode("ascii")
+    thread_id = os.environ.get("THREAD_ID") or None
+    prompt_msg = os.environ.get("PROMPT_MSG") or "Describe what you see in this photo from my Google Glass in 1 or 2 short sentences."
+    turn = MuseTurn(session_id=thread_id)
+
+    async def sub():
+        async for ev in sess.subscribe_chat(thread_id):
+            for tev in turn.feed(ev):
+                if isinstance(tev, Reply):
+                    if tev.text.strip():
+                        write_file("/run/glass/nova-reply", tev.text.strip())
+                    if tev.done:
+                        return tev
+
+    sub_task = asyncio.create_task(sub())
+    await asyncio.wait_for(sess.chat_subscribed.wait(), 10)
+    req = {
+        "message": prompt_msg,
+        "device_id": ident.node_id,
+        "output_modality": "voice",
+        "items": [{
+            "type": "file",
+            "mime_type": "image/png",
+            "filename": "glass_camera.png",
+            "data_base64": png_b64,
+        }],
+    }
+    if thread_id:
+        req["session_id"] = thread_id
+
+    res = await sess._post_chat(req)
+    ack = acknowledgement(res)
+    for tev in turn.acknowledge(ack):
+        if isinstance(tev, Reply) and tev.text.strip():
+            write_file("/run/glass/nova-reply", tev.text.strip())
+
+    reply = await asyncio.wait_for(sub_task, 35)
+    if reply and reply.message_id:
+        mp3_buf = bytearray()
+        async for chunk in sess.stream_tts(reply.message_id):
+            mp3_buf.extend(chunk)
+        if mp3_buf:
+            open("/tmp/nova-camera-reply.mp3", "wb").write(mp3_buf)
+    stop.set()
+    await task
+
+asyncio.run(main())
+PYEOF
+
+if [ -s /tmp/nova-camera-reply.mp3 ]; then
+    echo "SPEAKING" > /run/glass/nova-state
+    echo "SPEAKING" > /run/glass/voice-state
+    /usr/bin/glass-wav play /tmp/nova-camera-reply.mp3 -d /dev/snd/pcmC0D6p || \
+        /usr/bin/glass-wav play /tmp/nova-camera-reply.mp3 -d /dev/snd/pcmC0D0p || true
+fi
+
+echo "0" > /run/glass/nova-rms
+echo "READY (TAP TO TALK)" > /run/glass/nova-state
+echo "IDLE" > /run/glass/voice-state
+/usr/bin/glass-wav chime done >/dev/null 2>&1 || true

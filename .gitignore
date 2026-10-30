@@ -1,0 +1,14 @@
+# Build outputs, caches, and device state are never committed.
+out/
+work/
+*.img
+*.bin
+*.xz
+*.apk
+*.tar.gz
+
+# Credentials and pairing state are supplied at run time, never stored here.
+*wpa_supplicant.conf
+*pairing*.json
+*sdk_token*
+.env

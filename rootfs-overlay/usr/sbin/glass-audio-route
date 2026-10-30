@@ -1,0 +1,56 @@
+#!/bin/sh
+# Exact TWL6040 + OMAP4 ABE mixer routing extracted from stock Google Glass
+# /system/lib/hw/audio.primary.glass_1.so (XRH19 / XE24).
+set -eu
+
+amixer_set() {
+    amixer -q cset "$1" "$2" 2>/dev/null || true
+}
+
+# 1. Exact 24-entry mixer table from audio.primary.glass_1.so
+amixer_set "name='DL1 Media Playback Volume'" 120
+amixer_set "name='DL1 Voice Playback Volume'" 120
+amixer_set "name='SDT DL Volume'" 120
+amixer_set "name='Earphone Playback Switch'" 1
+amixer_set "name='Earphone Playback Volume'" 15
+amixer_set "name='Headset Playback Volume'" 12
+amixer_set "name='Capture Preamplifier Volume'" 1
+amixer_set "name='Capture Volume'" 4
+amixer_set "name='DL1 Mixer Multimedia'" 1
+amixer_set "name='DL1 Mixer Voice'" 1
+amixer_set "name='DL1 Mono Mixer'" 0
+amixer_set "name='DL1 PDM Switch'" 1
+amixer_set "name='Sidetone Mixer Playback'" 1
+amixer_set "name='BT UL Volume'" 120
+amixer_set "name='TWL6040 Power Mode'" "Low-Power"
+amixer_set "name='Headset Power Mode'" "High-Performance"
+amixer_set "name='PLL Selection'" "Low-Power"
+amixer_set "name='MUX_UL10'" "DMic0L"
+amixer_set "name='MUX_UL11'" "DMic0R"
+amixer_set "name='DMIC1 UL Volume'" "146,146"
+amixer_set "name='MUX_VX0'" "DMic0L"
+amixer_set "name='MUX_VX1'" "DMic0R"
+amixer_set "name='Voice Capture Mixer Capture'" 1
+amixer_set "name='AUDUL Voice UL Volume'" 120
+
+# 2. Route both internal bone-conduction transducer (Earphone) and HS DAC (micro-USB earbud)
+MODE="${1:-auto}"
+HEADSET_IN="$(cat /sys/devices/platform/usb_mux.0/headset 2>/dev/null || echo 0)"
+
+amixer_set "name='Earphone Playback Switch'" 1
+amixer_set "name='Earphone Playback Volume'" 15
+amixer_set "name='Headset Left Playback'" "HS DAC"
+amixer_set "name='Headset Right Playback'" "HS DAC"
+amixer_set "name='Headset Playback Volume'" 14
+
+if [ "$MODE" = "earbud" ] || [ "$HEADSET_IN" = "1" ]; then
+    if [ -w /sys/devices/platform/usb_mux.0/mux_mode ]; then
+        printf 'audio' > /sys/devices/platform/usb_mux.0/mux_mode 2>/dev/null || true
+    fi
+    if [ -w /sys/devices/platform/usb_mux.0/id_monitor ]; then
+        printf '1' > /sys/devices/platform/usb_mux.0/id_monitor 2>/dev/null || true
+    fi
+    echo "[glass-audio] Configured TWL6040 Earphone (bone-conduction) + micro-USB Earbud (usb_mux=audio) + DMic0."
+else
+    echo "[glass-audio] Configured TWL6040 Earphone (bone-conduction) + HS DAC + DMic0 (usb_mux=usb)."
+fi

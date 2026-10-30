@@ -1,0 +1,159 @@
+#!/bin/sh
+# glass-muse-voice: Interactive tap-to-talk & live voice-call controller for
+# Google Glass Explorer Edition (Vox / muse-gadget-overlay).
+#
+# Behavior when invoked with --tap (from temple touchpad tap in fb-hello):
+#   - If glass-wav record is active: signals /run/glass/stop-record to finish
+#     recording immediately and send the question to Nova (push-to-talk / tap-to-send).
+#   - If glass-wav play is active: interrupts playback and starts a new listening turn.
+#   - Otherwise: starts a new live voice turn (chime -> record w/ auto-VAD ->
+#     stream transcript & reply from Meta Muse -> play reply with 24-slot lip-sync).
+set -eu
+
+mkdir -p /run/glass /tmp/muse-voice
+
+if [ "${1:-}" = "--tap" ]; then
+    if pidof glass-wav >/dev/null 2>&1; then
+        if grep -q "LISTENING" /run/glass/nova-state 2>/dev/null; then
+            touch /run/glass/stop-record
+            exit 0
+        fi
+        if grep -q "SPEAKING" /run/glass/nova-state 2>/dev/null; then
+            killall glass-wav 2>/dev/null || true
+            echo "0" > /run/glass/nova-rms
+            echo "READY (TAP TO TALK)" > /run/glass/nova-state
+            exit 0
+        fi
+    fi
+    if [ -f /run/glass/voice-turn.lock ] && kill -0 "$(cat /run/glass/voice-turn.lock 2>/dev/null)" 2>/dev/null; then
+        exit 0
+    fi
+    shift
+fi
+
+echo "$$" > /run/glass/voice-turn.lock
+trap 'rm -f /run/glass/voice-turn.lock; echo "0" > /run/glass/nova-rms' EXIT INT TERM
+
+RECORD_SECS="${RECORD_SECS:-6.5}"
+WORK_DIR="${WORK_DIR:-/tmp/muse-voice}"
+IN_WAV="$WORK_DIR/question.wav"
+OUT_WAV="$WORK_DIR/reply.wav"
+
+if [ -f /etc/muse-gadget/voice.env ]; then
+    # shellcheck disable=SC1091
+    . /etc/muse-gadget/voice.env
+fi
+if [ -f /run/glass/voice.env ]; then
+    # shellcheck disable=SC1091
+    . /run/glass/voice.env
+fi
+
+VM_ID="${VM_ID:-${1:-}}"
+THREAD_ID="${THREAD_ID:-${2:-}}"
+
+# Auto-discover active VM_ID from /var/lib/musegadget/pairing.json if not cached
+if [ -z "$VM_ID" ] || [ -z "$THREAD_ID" ]; then
+    eval "$(python3 - <<'PY'
+import json, os, uuid
+from musegadget import config, muse_api
+
+env_path = "/run/glass/voice.env"
+vm_id = os.environ.get("VM_ID", "")
+thread_id = os.environ.get("THREAD_ID", "")
+
+if not vm_id:
+    try:
+        st = config.load_state()
+        tok = (st.get("pairing") or {}).get("device_token") or st.get("device_token")
+        if tok:
+            vms, _ = muse_api.fetch_vms_with_status(tok)
+            if vms:
+                vm_id = str(vms[0].get("id") or vms[0].get("vm_id") or "")
+    except Exception:
+        pass
+
+if not thread_id:
+    thread_id = str(uuid.uuid4())
+
+if vm_id:
+    with open(env_path, "w") as f:
+        f.write(f'VM_ID="{vm_id}"\nTHREAD_ID="{thread_id}"\n')
+    print(f'VM_ID="{vm_id}"')
+    print(f'THREAD_ID="{thread_id}"')
+PY
+)"
+fi
+
+if [ -z "$VM_ID" ] || [ -z "$THREAD_ID" ]; then
+    echo "ERROR: No paired VM_ID found" > /run/glass/nova-state
+    exit 1
+fi
+
+/usr/sbin/glass-audio-route >/dev/null 2>&1 || true
+
+if [ "${FORCE_RECORD:-1}" = "1" ] || [ ! -s "$IN_WAV" ]; then
+    echo "LISTENING (TAP=SEND)" > /run/glass/nova-state
+    echo "[SPEAK NOW — TAP TO SEND]" > /run/glass/nova-user
+    echo "..." > /run/glass/nova-reply
+    /usr/bin/glass-wav chime start >/dev/null 2>&1 || true
+    /usr/bin/glass-wav record "$IN_WAV" "$RECORD_SECS"
+fi
+
+echo "0" > /run/glass/nova-rms
+echo "THINKING..." > /run/glass/nova-state
+echo "[PROCESSING VOICE...]" > /run/glass/nova-user
+/usr/bin/glass-wav chime think >/dev/null 2>&1 || true
+
+rm -f "$OUT_WAV"
+
+python3 - "$VM_ID" "$THREAD_ID" "$IN_WAV" "$OUT_WAV" <<'PY'
+import subprocess, sys
+
+vm_id, thread_id, in_wav, out_wav = sys.argv[1:5]
+
+def write_file(path, text):
+    try:
+        with open(path, "w") as f:
+            f.write(text.strip() + "\n")
+    except Exception:
+        pass
+
+cmd = [
+    "musegadget", "--verbose", "voice-call",
+    "--vm-id", vm_id,
+    "--thread-id", thread_id,
+    "--in-wav", in_wav,
+    "--out-wav", out_wav,
+]
+
+proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+for raw in proc.stdout:
+    line = raw.strip()
+    sys.stdout.write(raw)
+    sys.stdout.flush()
+    if "input_audio_buffer.speech_stopped" in line:
+        write_file("/run/glass/nova-state", "THINKING...")
+    elif line.startswith("You:"):
+        user_txt = line[4:].strip()
+        if user_txt:
+            write_file("/run/glass/nova-user", user_txt)
+    elif line.startswith("Muse:"):
+        reply_txt = line[5:].strip()
+        if reply_txt:
+            write_file("/run/glass/nova-reply", reply_txt)
+            write_file("/run/glass/nova-state", "THINKING...")
+proc.wait()
+sys.exit(proc.returncode or 0)
+PY
+
+if [ -s "$OUT_WAV" ] && [ "$(wc -c < "$OUT_WAV")" -gt 200 ]; then
+    cp -f "$OUT_WAV" /var/lib/musegadget/voice-reply-live.wav 2>/dev/null || true
+    echo "SPEAKING" > /run/glass/nova-state
+    /usr/bin/glass-wav play "$OUT_WAV"
+    echo "0" > /run/glass/nova-rms
+    echo "READY (TAP TO TALK)" > /run/glass/nova-state
+else
+    echo "0" > /run/glass/nova-rms
+    echo "NO SPEECH HEARD (TAP)" > /run/glass/nova-state
+    exit 1
+fi

@@ -1,0 +1,12 @@
+# busybox inittab for Glass OS (Muse Gadget Overlay)
+::sysinit:/etc/glass/rcS
+# Serial console shell on ttyO2 (115200n8, enabled by stock XE24 cmdline)
+::respawn:/etc/glass/console uart
+# USB gadget serial shell on ttyGS0 (if composite ACM is enabled)
+::respawn:/etc/glass/console usb
+# Continuous framebuffer test pattern & live hardware telemetry HUD on /dev/fb0
+::respawn:/usr/bin/fb-hello --no-panel-reset
+# SSH server on USB RNDIS (172.16.42.1) and Wi-Fi (wlan0) — allow blank root password (-B) & keys
+::respawn:/usr/sbin/dropbear -F -E -R -B -p 22 -K 5
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/sync

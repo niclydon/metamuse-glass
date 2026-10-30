@@ -1,0 +1,26 @@
+#!/bin/sh
+# glass-gadget: configures the Android USB composite gadget on the stock
+# XE24 3.4.94 kernel for RNDIS networking (172.16.42.1).
+a=/sys/class/android_usb/android0
+if [ -d "$a" ]; then
+    echo 0 > "$a/enable"
+    echo 18D1 > "$a/idVendor"
+    echo D001 > "$a/idProduct"
+    echo "glass-os" > "$a/iManufacturer"
+    echo "Glass OS (Muse Gadget)" > "$a/iProduct"
+    echo rndis,acm > "$a/functions" 2>/dev/null || echo rndis > "$a/functions"
+    echo 1 > "$a/enable"
+    i=0
+    while [ $i -lt 10 ]; do
+        for n in rndis0 usb0; do
+            if [ -d "/sys/class/net/$n" ]; then
+                echo "$n"
+                exit 0
+            fi
+        done
+        sleep 1
+        i=$((i + 1))
+    done
+fi
+echo "glass-gadget: no USB network interface came up" >&2
+exit 1

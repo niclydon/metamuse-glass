@@ -1,0 +1,98 @@
+#!/bin/sh
+# Bring up BCM4330 Bluetooth on OMAP4 UART (/dev/ttyO1) + BlueZ for M3
+# (Meta Muse Gadget BLE pairing on stock XE24 3.4.94 kernel).
+set -eu
+
+HCD="/system/etc/firmware/bcm4330.hcd"
+BT_UART="${BT_UART:-/dev/ttyO1}"
+BT_BAUD="${BT_BAUD:-3000000}"
+BT_BDADDR="${BT_BDADDR:-f8:8f:ca:25:df:ca}"
+
+log() {
+    echo "[glass-bt] $*"
+}
+
+if [ ! -s "$HCD" ] && [ -s "/mnt/system/vendor/firmware/bcm4330.hcd" ]; then
+    HCD="/mnt/system/vendor/firmware/bcm4330.hcd"
+fi
+
+if [ ! -s "$HCD" ]; then
+    log "ERROR: Missing $HCD (Broadcom BCM4330 patchram firmware)"
+    exit 1
+fi
+
+# BlueZ hciattach bcm43xx_init queries local name "BCM4330B1" and searches /lib/firmware/BCM4330B1.hcd
+mkdir -p /lib/firmware /etc/firmware
+cp -f "$HCD" /lib/firmware/BCM4330B1.hcd
+cp -f "$HCD" /lib/firmware/bcm4330.hcd
+
+# Enable BLE in the stock XE24 3.4.94 kernel Bluetooth subsystem (defaults to N unless set)
+if [ -w /sys/module/bluetooth/parameters/enable_le ]; then
+    echo Y > /sys/module/bluetooth/parameters/enable_le 2>/dev/null || \
+    echo 1 > /sys/module/bluetooth/parameters/enable_le 2>/dev/null || true
+    log "Enabled /sys/module/bluetooth/parameters/enable_le=$(cat /sys/module/bluetooth/parameters/enable_le 2>/dev/null)"
+fi
+
+# Configure /etc/bluetooth/main.conf with ExchangeMTU = 23 (matching stock 3.4.94 L2CAP_CID_ATT omtu=23)
+mkdir -p /etc/bluetooth
+cat > /etc/bluetooth/main.conf <<'EOF'
+[General]
+Name = Glass Muse Gadget
+ControllerMode = dual
+Privacy = off
+
+[GATT]
+ExchangeMTU = 23
+Cache = always
+EOF
+log "Wrote /etc/bluetooth/main.conf with [GATT] ExchangeMTU = 23"
+
+# Toggle rfkill bluetooth power cycle if exposed by board-notle
+for rfk in /sys/class/rfkill/rfkill*; do
+    [ -e "$rfk/type" ] || continue
+    if [ "$(cat "$rfk/type" 2>/dev/null)" = "bluetooth" ]; then
+        log "Cycling bluetooth rfkill at $rfk"
+        echo 0 > "$rfk/state" 2>/dev/null || true
+        sleep 1
+        echo 1 > "$rfk/state" 2>/dev/null || true
+        sleep 1
+    fi
+done
+
+# Ensure messagebus user exists and start dbus-daemon if not running
+grep -q '^messagebus:' /etc/group 2>/dev/null || echo 'messagebus:x:101:messagebus' >> /etc/group
+grep -q '^messagebus:' /etc/passwd 2>/dev/null || echo 'messagebus:x:101:101:Linux User,,,:/run/dbus:/sbin/nologin' >> /etc/passwd
+if command -v dbus-daemon >/dev/null 2>&1; then
+    mkdir -p /run/dbus /var/run/dbus
+    if ! pidof dbus-daemon >/dev/null 2>&1; then
+        dbus-uuidgen --ensure >/dev/null 2>&1 || true
+        dbus-daemon --system
+        log "Started system dbus-daemon"
+    fi
+fi
+
+# Attach BCM4330 UART HCI transport on /dev/ttyO1
+if ! hciconfig hci0 >/dev/null 2>&1; then
+    log "Attaching BCM4330 via hciattach on $BT_UART ($BT_BAUD baud, BDADDR $BT_BDADDR)..."
+    hciattach "$BT_UART" bcm43xx "$BT_BAUD" flow - "$BT_BDADDR"
+    sleep 1
+fi
+
+hciconfig hci0 up
+hciconfig hci0 leadv 0 2>/dev/null || true
+
+# Start bluetoothd with libglass_ble_shim.so (sets BDADDR_LE_PUBLIC on L2CAP ATT CID 4 for kernel 3.4)
+for btd in /usr/lib/bluetooth/bluetoothd /usr/libexec/bluetooth/bluetoothd /usr/sbin/bluetoothd; do
+    if [ -x "$btd" ] && ! pidof bluetoothd >/dev/null 2>&1; then
+        if [ -f /usr/lib/libglass_ble_shim.so ]; then
+            LD_PRELOAD=/usr/lib/libglass_ble_shim.so "$btd" --compat --experimental >/run/glass/bluetoothd.log 2>&1 &
+        else
+            "$btd" --compat --experimental >/run/glass/bluetoothd.log 2>&1 &
+        fi
+        sleep 2
+        log "Started $btd (with libglass_ble_shim.so)"
+        break
+    fi
+done
+
+hciconfig -a

@@ -1,0 +1,150 @@
+#!/bin/sh
+# glass-wifi: 2.4 GHz Wi-Fi manager for Google Glass (Broadcom BCM4330,
+# bcmdhd driver, CFG80211 / nl80211 backend).
+#
+# Firmware & NVRAM placement:
+#   /system/etc/firmware/fw_bcmdhd.bin  (compiled-in path + sysfs parameter)
+#   /system/etc/firmware/bcmdhd.cal     (board calibration NVRAM)
+#   /etc/wifi/bcmdhd.cal -> /system/etc/firmware/bcmdhd.cal
+#   /lib/firmware/glass/fw_bcmdhd.bin -> /system/etc/firmware/fw_bcmdhd.bin
+#
+# Usage:
+#   glass-wifi add <SSID> [PASSPHRASE]
+#   glass-wifi up
+#   glass-wifi down
+#   glass-wifi status
+#   glass-wifi scan
+set -eu
+
+CONF=/etc/wpa_supplicant/wpa_supplicant.conf
+FW_BIN=/system/etc/firmware/fw_bcmdhd.bin
+FW_CAL=/system/etc/firmware/bcmdhd.cal
+
+die() { echo "glass-wifi: $*" >&2; exit 1; }
+
+ensure_conf() {
+    mkdir -p /etc/wpa_supplicant /run/wpa_supplicant /var/log
+    if [ ! -f "$CONF" ]; then
+        printf 'ctrl_interface=/run/wpa_supplicant\nupdate_config=1\n' > "$CONF"
+    fi
+    chmod 600 "$CONF"
+}
+
+bring_radio_up() {
+    [ -f "$FW_BIN" ] || die "missing $FW_BIN"
+    [ -f "$FW_CAL" ] || die "missing $FW_CAL"
+    if [ -d /sys/module/bcmdhd/parameters ]; then
+        echo "$FW_BIN" > /sys/module/bcmdhd/parameters/firmware_path
+        echo "$FW_CAL" > /sys/module/bcmdhd/parameters/nvram_path
+    fi
+    ip link set wlan0 up || die "wlan0 failed to come up (check dmesg | grep -i dhd)"
+    # Keep a stable MAC address across reboots
+    mkdir -p /etc/glass
+    if [ -f /etc/glass/wifi-mac ]; then
+        want_mac=$(cat /etc/glass/wifi-mac)
+        cur_mac=$(cat /sys/class/net/wlan0/address 2>/dev/null || echo "")
+        if [ -n "$want_mac" ] && [ "$cur_mac" != "$want_mac" ]; then
+            ip link set wlan0 address "$want_mac" 2>/dev/null || true
+        fi
+    else
+        cat /sys/class/net/wlan0/address > /etc/glass/wifi-mac 2>/dev/null || true
+    fi
+}
+
+start_supplicant() {
+    ensure_conf
+    [ -S /run/wpa_supplicant/wlan0 ] && return 0
+    bring_radio_up
+    # WEXT is compiled out in notle_defconfig; explicitly use nl80211.
+    setsid wpa_supplicant -Dnl80211 -i wlan0 -c "$CONF" >> /var/log/wpa_supplicant.log 2>&1 </dev/null &
+    echo $! > /run/wpa_supplicant.pid
+    i=0
+    while [ ! -S /run/wpa_supplicant/wlan0 ] && [ $i -lt 50 ]; do
+        sleep 0.1
+        i=$((i + 1))
+    done
+    [ -S /run/wpa_supplicant/wlan0 ] || die "wpa_supplicant (-Dnl80211) failed to start"
+}
+
+case "${1:-}" in
+    add)
+        ssid=${2:-}
+        [ -n "$ssid" ] || die "usage: glass-wifi add <SSID> [PASSPHRASE]"
+        pass=${3:-}
+        if [ -z "$pass" ]; then
+            printf 'Passphrase for %s: ' "$ssid" >&2
+            stty -echo 2>/dev/null || true
+            read -r pass
+            stty echo 2>/dev/null || true
+            echo >&2
+        fi
+        ensure_conf
+        block=$(wpa_passphrase "$ssid" "$pass" | grep -v '^[[:space:]]*#psk=') || die "wpa_passphrase failed"
+        pass=""
+        printf '\n%s\n' "$block" >> "$CONF"
+        chmod 600 "$CONF"
+        if [ -S /run/wpa_supplicant/wlan0 ]; then
+            wpa_cli -i wlan0 reconfigure >/dev/null
+        fi
+        echo "glass-wifi: stored network '$ssid' (derived PSK only)"
+        ;;
+    up)
+        start_supplicant
+        # Disable power_save on BCM4330 to prevent beacon-burst TCP stalls
+        command -v iw >/dev/null 2>&1 && iw dev wlan0 set power_save off 2>/dev/null || true
+        # Wait up to 15s for COMPLETED state, then request DHCP and sync NTP
+        i=0
+        while [ $i -lt 30 ]; do
+            if wpa_cli -i wlan0 status 2>/dev/null | grep -q '^wpa_state=COMPLETED'; then
+                break
+            fi
+            sleep 0.5
+            i=$((i + 1))
+        done
+        if [ -f /run/udhcpc.wlan0.pid ] && kill -0 "$(cat /run/udhcpc.wlan0.pid)" 2>/dev/null; then
+            kill -USR1 "$(cat /run/udhcpc.wlan0.pid)" 2>/dev/null || true
+        else
+            udhcpc -b -i wlan0 -p /run/udhcpc.wlan0.pid -x hostname:glass-muse -t 5 -T 3 >/dev/null 2>&1 || true
+        fi
+        sed -i '/^-n$/d' /etc/resolv.conf 2>/dev/null || true
+        # Sync system clock via NTP synchronously first so modern TLS certs validate immediately
+        if ntpd -n -q -p pool.ntp.org >/dev/null 2>&1; then
+            touch /run/glass/clock-ok
+        else
+            (
+                j=0
+                while [ $j -lt 6 ]; do
+                    if ntpd -n -q -p pool.ntp.org >/dev/null 2>&1; then
+                        touch /run/glass/clock-ok
+                        exit 0
+                    fi
+                    sleep 3
+                    j=$((j + 1))
+                done
+            ) >/dev/null 2>&1 &
+        fi
+        "$0" status
+        ;;
+    down)
+        [ -f /run/udhcpc.wlan0.pid ] && kill "$(cat /run/udhcpc.wlan0.pid)" 2>/dev/null || true
+        [ -f /run/wpa_supplicant.pid ] && kill "$(cat /run/wpa_supplicant.pid)" 2>/dev/null || true
+        rm -f /run/udhcpc.wlan0.pid /run/wpa_supplicant.pid /run/wpa_supplicant/wlan0
+        ip link set wlan0 down 2>/dev/null || true
+        ;;
+    scan)
+        start_supplicant
+        wpa_cli -i wlan0 scan >/dev/null
+        sleep 3
+        wpa_cli -i wlan0 scan_results
+        ;;
+    status)
+        if [ -S /run/wpa_supplicant/wlan0 ]; then
+            wpa_cli -i wlan0 status | grep -E '^(ssid|bssid|freq|key_mgmt|wpa_state|ip_address)=' || true
+        fi
+        ip -4 addr show wlan0 2>/dev/null | grep inet || true
+        ;;
+    *)
+        echo "Usage: glass-wifi {add <SSID> [PASS]|up|down|scan|status}" >&2
+        exit 2
+        ;;
+esac
